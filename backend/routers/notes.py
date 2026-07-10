@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -31,10 +31,10 @@ def _get_model():
 
 
 class CreateNoteRequest(BaseModel):
-    title: str
-    content: str
-    source: str = "web"
-    tags: str = ""
+    title: str = Field(min_length=1, max_length=1024)
+    content: str = Field(min_length=1, max_length=2_000_000)
+    source: str = Field(default="manual", min_length=1, max_length=64)
+    tags: str = Field(default="", max_length=4000)
 
 
 class NoteResponse(BaseModel):
@@ -65,11 +65,11 @@ async def create_note(
 ):
     """Create a new note and index it in ChromaDB."""
     note_id = str(uuid.uuid4())[:8]
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     # Generate embedding
-    model = _get_model()
-    embedding = model.encode(body.content).tolist()
+    model = await asyncio.to_thread(_get_model)
+    embedding = await asyncio.to_thread(lambda: model.encode(body.content).tolist())
 
     # Store in ChromaDB
     collection = get_chroma_collection()
@@ -85,6 +85,11 @@ async def create_note(
         }],
         embeddings=[embedding],
     )
+    from services.search_service import invalidate_search_cache
+    from routers.graph import invalidate_graph_cache
+
+    invalidate_search_cache()
+    invalidate_graph_cache()
 
     # Broadcast to SSE listeners
     await _broadcast_event("note_created", {

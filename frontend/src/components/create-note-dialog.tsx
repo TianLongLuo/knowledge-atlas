@@ -13,6 +13,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Plus, Loader2 } from "lucide-react";
+import { createNote } from "@/lib/api";
 
 interface Props {
   onCreated?: () => void;
@@ -31,19 +32,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
     setLoading(true);
     setError("");
     try {
-      const token = localStorage.getItem("auth_token");
-      const res = await fetch("/api/notes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ title: title.trim(), content: content.trim(), source: "web", tags: "" }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "创建失败");
-      }
+      await createNote({ title: title.trim(), content: content.trim(), source: "manual", tags: "" });
       setOpen(false);
       setTitle("");
       setContent("");

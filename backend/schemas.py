@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class TokenResponse(BaseModel):
@@ -47,9 +47,9 @@ class DocumentResponse(BaseModel):
 
 
 class DocumentDetailResponse(DocumentResponse):
-    chunks: list["ChunkResponse"] = []
-    nodes: list["KnowledgeNodeResponse"] = []
-    edges: list["KnowledgeEdgeResponse"] = []
+    chunks: list["ChunkResponse"] = Field(default_factory=list)
+    nodes: list["KnowledgeNodeResponse"] = Field(default_factory=list)
+    edges: list["KnowledgeEdgeResponse"] = Field(default_factory=list)
 
 
 class ChunkResponse(BaseModel):
@@ -94,11 +94,14 @@ class SearchResponse(BaseModel):
 
 
 class AskRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=8000)
     top_k: int = Field(default=5, ge=1, le=20)
+    session_id: str | None = Field(default=None, max_length=128)
+    document_id: int | None = None
 
 
 class Citation(BaseModel):
+    document_id: int = 0
     document_title: str
     chunk_snippet: str
     source_url: str | None = None
@@ -109,6 +112,7 @@ class AskResponse(BaseModel):
     question: str
     answer: str
     citations: list[Citation]
+    session_id: str
 
 
 # ── Sync ────────────────────────────────────────────────────────────

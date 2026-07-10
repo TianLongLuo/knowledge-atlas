@@ -1,203 +1,259 @@
-"""Graph router — semantic knowledge network via vector similarity."""
+"""Scalable semantic graph API backed by Chroma's ANN index."""
 
 from __future__ import annotations
 
 import logging
-import math
+import time
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from auth import get_current_user
+from config import settings
 from database import get_chroma_collection
+from routers.documents import _pseudo_id
 
 logger = logging.getLogger("knowledge-atlas.graph")
 router = APIRouter(prefix="/api/graph", tags=["graph"])
+_graph_cache: dict[tuple[int, float, int, int], tuple[float, "GraphResponse"]] = {}
+
+
+def invalidate_graph_cache() -> None:
+    _graph_cache.clear()
 
 
 class GraphNode(BaseModel):
     id: str
     label: str
     group: str
-    size: int = 10
-    # Content preview for tooltip
+    size: float = 10
     snippet: str = ""
+    document_id: int
+    source: str = "unknown"
+    degree: int = 0
 
 
 class GraphEdge(BaseModel):
     source: str
     target: str
-    weight: float = 1.0
-    label: str = ""
+    weight: float = Field(ge=0, le=1)
+    label: str = "semantic"
+    edge_type: str = "semantic"
+
+
+class GraphStats(BaseModel):
+    node_count: int
+    edge_count: int
+    isolated_count: int
+    groups: dict[str, int]
 
 
 class GraphResponse(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    stats: GraphStats
 
 
-# ── NLP stopwords ──────────────────────────────────────────────────
-
-_COMMON = {
-    "the", "is", "at", "which", "on", "a", "an", "and", "or", "of",
-    "to", "in", "for", "with", "it", "that", "this", "be", "are",
-    "的", "是", "了", "在", "和", "也", "就", "都", "不", "有",
-    "我", "你", "他", "她", "它", "们", "这", "那", "什么", "怎么",
-    "一个", "可以", "没有", "他们", "我们", "这个", "如果", "因为",
-    "所以", "但是", "而且", "或者", "已经", "还是", "就是", "不是",
-    "还", "要", "会", "能", "很", "与", "让", "从", "把", "被",
-    "吗", "呢", "吧", "啊", "哦", "嗯", "之", "其", "些", "各",
+_KEYWORDS = {
+    "商业": ("商业", "盈利", "收入", "市场", "投资", "融资", "客户", "变现", "business", "revenue"),
+    "产品": ("产品", "功能", "用户", "交互", "界面", "设计", "需求", "product", "ux", "feature"),
+    "运营": ("运营", "流量", "转化", "留存", "增长", "数据", "指标", "活动"),
+    "营销": ("营销", "推广", "品牌", "广告", "文案", "投放", "seo", "marketing"),
+    "思考": ("思考", "认知", "逻辑", "批判", "观点", "反思", "哲学", "critical"),
+    "生活": ("生活", "日常", "旅行", "美食", "健身", "音乐", "电影", "life", "travel"),
+    "技术": ("技术", "代码", "编程", "架构", "服务器", "算法", "code", "python", "api", "docker"),
+    "学习": ("学习", "笔记", "教程", "阅读", "课程", "知识", "learn", "study", "book"),
+    "创作": ("写作", "小说", "文字", "故事", "创作", "人物", "情节", "write", "story"),
 }
 
-_GROUPS = ["商业", "产品", "运营", "营销", "思考", "生活", "技术", "学习", "创作", "随笔"]
+
+def dominant_group(text: str, title: str, metadata: dict) -> str:
+    """Prefer explicit metadata and fall back to deterministic keywords."""
+    explicit = metadata.get("group") or metadata.get("category")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()[:32]
+    combined = f"{title} {(text or '')[:500]}".lower()
+    scores = {group: sum(keyword in combined for keyword in words) for group, words in _KEYWORDS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] else "随笔"
 
 
-def _dominant_group(text: str, title: str) -> str:
-    """Assign a semantic group based on keyword presence in text."""
-    combined = (title + " " + (text or "")[:300]).lower()
-    signals: dict[str, int] = {}
-
-    kw_map = {
-        "商业": ["商业", "盈利", "收入", "市场", "投资", "融资", "客户", "变现", "business", "revenue", "profit"],
-        "产品": ["产品", "功能", "用户", "交互", "界面", "设计", "需求", "product", "ux", "feature"],
-        "运营": ["运营", "流量", "转化", "留存", "增长", "数据", "指标", "活动"],
-        "营销": ["营销", "推广", "品牌", "广告", "文案", "投放", "seo", "marketing", "brand"],
-        "思考": ["思考", "认知", "逻辑", "批判", "观点", "反思", "哲学", "think", "critical"],
-        "生活": ["生活", "日常", "旅行", "美食", "健身", "音乐", "电影", "life", "travel"],
-        "技术": ["技术", "代码", "编程", "架构", "服务器", "算法", "code", "python", "api", "docker"],
-        "学习": ["学习", "笔记", "教程", "阅读", "课程", "知识", "learn", "study", "book"],
-        "创作": ["写作", "小说", "文字", "故事", "创作", "人物", "情节", "write", "story", "novel"],
-        "随笔": ["随笔", "感想", "记录", "碎片", "日记", "杂", "journal", "note"],
-    }
-
-    for group, kws in kw_map.items():
-        signals[group] = sum(1 for kw in kws if kw in combined)
-
-    if not signals or max(signals.values()) == 0:
-        return "随笔"
-    return max(signals, key=lambda g: signals[g])
+def content_snippet(text: str, max_len: int = 110) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= max_len:
+        return compact
+    for separator in ("。", ". ", "，", ", ", " "):
+        index = compact[:max_len].rfind(separator)
+        if index >= max_len // 2:
+            return compact[: index + (1 if separator in {"。", "，"} else 0)] + "…"
+    return compact[:max_len] + "…"
 
 
-def _content_snippet(text: str, max_len: int = 80) -> str:
-    """Extract first meaningful sentence for tooltip."""
-    if not text:
-        return ""
-    t = text.strip().replace("\n", " ")
-    if len(t) <= max_len:
-        return t
-    # Try to break at sentence boundary
-    for sep in ["。", "，", ". ", ", ", " "]:
-        idx = t[:max_len].rfind(sep)
-        if idx > max_len * 0.5:
-            return t[:idx] + "…"
-    return t[:max_len] + "…"
+def _empty_response() -> GraphResponse:
+    return GraphResponse(
+        nodes=[],
+        edges=[],
+        stats=GraphStats(node_count=0, edge_count=0, isolated_count=0, groups={}),
+    )
 
 
-# ── Cosine similarity helpers ──────────────────────────────────────
-
-
-def _cosine_sim(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    if not a or not b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
-
-# ── Endpoints ──────────────────────────────────────────────────────
+def _node_identity(chroma_id: str, metadata: dict) -> tuple[str, int]:
+    """Collapse all chunks belonging to one document into one graph node."""
+    raw_document_id = metadata.get("document_id")
+    try:
+        document_id = int(raw_document_id)
+        return f"document:{document_id}", document_id
+    except (TypeError, ValueError):
+        return f"chroma:{chroma_id}", _pseudo_id(chroma_id)
 
 
 @router.get("/full", response_model=GraphResponse)
 async def get_full_graph(
-    limit: int = Query(default=120, ge=10, le=500),
-    min_similarity: float = Query(default=0.25, ge=0.1, le=0.9),
+    limit: int = Query(default=settings.graph_default_limit, ge=10, le=500),
+    min_similarity: float = Query(default=0.35, ge=0.05, le=0.95),
+    neighbors: int = Query(default=settings.graph_neighbors_per_node, ge=2, le=50),
+    max_edges: int = Query(default=settings.graph_max_edges, ge=10, le=5000),
     _user: str = Depends(get_current_user),
 ):
-    """Build knowledge graph from ChromaDB using vector similarity.
+    """Return an ANN Top-K semantic graph.
 
-    Edges represent *semantic relevance* between documents — two notes
-    are connected when their embedding vectors are close in high-dimensional
-    space, meaning they discuss overlapping concepts.
+    Chroma's HNSW index finds a small neighbor set for each node.  This avoids
+    the previous O(n²) Python cosine loop and bounds graph density explicitly.
     """
+    cache_key = (limit, round(min_similarity, 3), neighbors, max_edges)
+    cached = _graph_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < 30:
+        return cached[1]
     try:
         collection = get_chroma_collection()
-        # Fetch documents WITH embeddings — this is key for semantic edges
+        # A document may have many chunks. Read a bounded oversample and then
+        # aggregate chunks into document-level nodes before querying ANN.
         result = collection.get(
-            limit=min(limit, 500),
+            limit=min(limit * 8, 4000),
             include=["documents", "metadatas", "embeddings"],
         )
+        ids = list(result.get("ids") or [])
+        if not ids:
+            return _empty_response()
 
-        if not result["ids"]:
-            return GraphResponse(nodes=[], edges=[])
+        documents = list(result.get("documents") or [""] * len(ids))
+        metadatas = list(result.get("metadatas") or [{}] * len(ids))
+        raw_embeddings = result.get("embeddings")
+        embeddings = []
+        if raw_embeddings is not None:
+            embeddings = [embedding.tolist() if hasattr(embedding, "tolist") else list(embedding) for embedding in raw_embeddings]
 
-        n = len(result["ids"])
+        aggregates: dict[str, dict] = {}
+        for index, chroma_id in enumerate(ids):
+            metadata = metadatas[index] or {}
+            text = documents[index] or ""
+            node_id, document_id = _node_identity(chroma_id, metadata)
+            aggregate = aggregates.setdefault(node_id, {
+                "document_id": document_id,
+                "title": str(metadata.get("title") or f"Note {index + 1}"),
+                "source": str(metadata.get("source") or "chromadb"),
+                "metadata": metadata,
+                "texts": [],
+                "vectors": [],
+            })
+            if len(aggregate["texts"]) < 4:
+                aggregate["texts"].append(text)
+            if len(embeddings) == len(ids) and embeddings[index]:
+                aggregate["vectors"].append(embeddings[index])
 
-        # ── Build nodes ──────────────────────────────────────────
-        nodes: list[GraphNode] = []
-        node_ids: list[str] = []
-
-        for i in range(n):
-            cid = result["ids"][i]
-            meta = (result["metadatas"][i] or {}) if result["metadatas"] else {}
-            text = (result["documents"][i] or "") if result["documents"] else ""
-            title = meta.get("title", f"Note {i + 1}")
-
-            group = _dominant_group(text, title)
-            snippet = _content_snippet(text)
-
-            node_id = f"n{i}"
-            nodes.append(GraphNode(
+        selected_aggregates = list(aggregates.items())[:limit]
+        nodes_by_id: dict[str, GraphNode] = {}
+        query_embeddings: list[list[float]] = []
+        query_node_ids: list[str] = []
+        group_counts: dict[str, int] = {}
+        for node_id, aggregate in selected_aggregates:
+            text = "\n".join(aggregate["texts"])
+            title = aggregate["title"]
+            metadata = aggregate["metadata"]
+            group = dominant_group(text, title, metadata)
+            group_counts[group] = group_counts.get(group, 0) + 1
+            nodes_by_id[node_id] = GraphNode(
                 id=node_id,
-                label=title[:40],
+                label=title[:80],
                 group=group,
-                size=min(8 + len(text) // 500, 25),
-                snippet=snippet,
-            ))
-            node_ids.append(node_id)
+                snippet=content_snippet(text),
+                document_id=aggregate["document_id"],
+                source=aggregate["source"],
+            )
+            vectors = aggregate["vectors"]
+            if vectors:
+                dimensions = len(vectors[0])
+                query_embeddings.append([
+                    sum(vector[dimension] for vector in vectors) / len(vectors)
+                    for dimension in range(dimensions)
+                ])
+                query_node_ids.append(node_id)
 
-        # ── Build edges via vector similarity ────────────────────
-        embeddings: list[list[float]] = []
-        if result["embeddings"] is not None and len(result["embeddings"]) == n:
-            for emb in result["embeddings"]:
-                if emb is not None and len(emb) > 0:
-                    # ChromaDB may return numpy arrays — convert to list
-                    embeddings.append(emb.tolist() if hasattr(emb, "tolist") else list(emb))
-                else:
-                    embeddings.append([])
+        edges_by_pair: dict[tuple[str, str], GraphEdge] = {}
+        if query_embeddings:
+            nearest = collection.query(
+                query_embeddings=query_embeddings,
+                # Oversample because the nearest records may be sibling chunks
+                # from the same document and are collapsed below.
+                n_results=min(neighbors * 8 + 1, collection.count()),
+                include=["distances", "metadatas"],
+            )
+            neighbor_ids = nearest.get("ids") or []
+            neighbor_distances = nearest.get("distances") or []
+            neighbor_metadatas = nearest.get("metadatas") or []
+            allowed = set(nodes_by_id)
+            for source_index, source_id in enumerate(query_node_ids):
+                if source_index >= len(neighbor_ids):
+                    continue
+                distances = neighbor_distances[source_index] if source_index < len(neighbor_distances) else []
+                metadata_row = neighbor_metadatas[source_index] if source_index < len(neighbor_metadatas) else []
+                accepted = 0
+                for target_index, target_chroma_id in enumerate(neighbor_ids[source_index]):
+                    target_metadata = metadata_row[target_index] if target_index < len(metadata_row) else {}
+                    target_id, _ = _node_identity(target_chroma_id, target_metadata or {})
+                    if target_id == source_id or target_id not in allowed or target_index >= len(distances):
+                        continue
+                    similarity = max(0.0, min(1.0, 1.0 - float(distances[target_index])))
+                    if similarity < min_similarity:
+                        continue
+                    pair = tuple(sorted((source_id, target_id)))
+                    current = edges_by_pair.get(pair)
+                    if current is None or similarity > current.weight:
+                        edges_by_pair[pair] = GraphEdge(
+                            source=pair[0],
+                            target=pair[1],
+                            weight=round(similarity, 4),
+                            label=f"semantic {similarity:.2f}",
+                        )
+                    accepted += 1
+                    if accepted >= neighbors:
+                        break
 
-        edges: list[GraphEdge] = []
+        edges = sorted(edges_by_pair.values(), key=lambda edge: edge.weight, reverse=True)[:max_edges]
+        for edge in edges:
+            nodes_by_id[edge.source].degree += 1
+            nodes_by_id[edge.target].degree += 1
+        nodes = list(nodes_by_id.values())
+        for node in nodes:
+            node.size = min(24.0, 6.0 + node.degree * 1.35)
 
-        if embeddings and len(embeddings) == n:
-            for i in range(n):
-                for j in range(i + 1, n):
-                    sim = _cosine_sim(embeddings[i], embeddings[j])
-                    if sim >= min_similarity:
-                        edges.append(GraphEdge(
-                            source=node_ids[i],
-                            target=node_ids[j],
-                            weight=round(sim, 3),
-                            label=f"semantic {sim:.2f}",
-                        ))
-
-        # Sort by weight descending, keep top 1500
-        edges.sort(key=lambda e: e.weight, reverse=True)
-        edges = edges[:1500]
-
-        # ── Stats ────────────────────────────────────────────────
-        logger.info(
-            "Graph built: %d nodes, %d edges (sim≥%.2f) — density %.1f%%",
-            len(nodes),
-            len(edges),
-            min_similarity,
-            (len(edges) / (len(nodes) * (len(nodes) - 1) / 2) * 100) if len(nodes) > 1 else 0,
+        isolated_count = sum(node.degree == 0 for node in nodes)
+        stats = GraphStats(
+            node_count=len(nodes),
+            edge_count=len(edges),
+            isolated_count=isolated_count,
+            groups=group_counts,
         )
-
-        return GraphResponse(nodes=nodes, edges=edges)
-
-    except Exception as e:
-        logger.error(f"Graph error: {e}")
-        return GraphResponse(nodes=[], edges=[])
+        logger.info(
+            "ANN graph built: nodes=%d edges=%d isolated=%d threshold=%.2f k=%d",
+            len(nodes), len(edges), isolated_count, min_similarity, neighbors,
+        )
+        response = GraphResponse(nodes=nodes, edges=edges, stats=stats)
+        if len(_graph_cache) >= 16:
+            oldest = min(_graph_cache, key=lambda key: _graph_cache[key][0])
+            _graph_cache.pop(oldest, None)
+        _graph_cache[cache_key] = (time.monotonic(), response)
+        return response
+    except Exception as exc:
+        logger.exception("Unable to build semantic graph")
+        raise HTTPException(status_code=503, detail="Semantic graph is temporarily unavailable") from exc

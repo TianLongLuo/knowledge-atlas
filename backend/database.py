@@ -7,6 +7,7 @@ and a ChromaDB client for the vector store.
 from __future__ import annotations
 
 import chromadb
+from chromadb.errors import NotFoundError
 from chromadb.config import Settings as ChromaSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -36,25 +37,36 @@ class Base(DeclarativeBase):
 
 # ── ChromaDB ────────────────────────────────────────────────────────
 
-chroma_client = chromadb.PersistentClient(
-    path=settings.chroma_data_path,
-    settings=ChromaSettings(anonymized_telemetry=False),
-)
-
-# Get or create the collection
+_chroma_client: chromadb.ClientAPI | None = None
 _chroma_collection: chromadb.Collection | None = None
+
+
+def get_chroma_client() -> chromadb.ClientAPI:
+    """Create the local Chroma client lazily.
+
+    Importing the API application must not create files or fail merely because
+    the vector-store mount is temporarily unavailable.
+    """
+    global _chroma_client
+    if _chroma_client is None:
+        _chroma_client = chromadb.PersistentClient(
+            path=settings.chroma_data_path,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+    return _chroma_client
 
 
 def get_chroma_collection() -> chromadb.Collection:
     """Return a reference to the ChromaDB collection, creating it if needed."""
     global _chroma_collection
     if _chroma_collection is None:
+        client = get_chroma_client()
         try:
-            _chroma_collection = chroma_client.get_collection(
+            _chroma_collection = client.get_collection(
                 name=settings.chroma_collection_name
             )
-        except Exception:
-            _chroma_collection = chroma_client.create_collection(
+        except NotFoundError:
+            _chroma_collection = client.create_collection(
                 name=settings.chroma_collection_name,
                 metadata={"hnsw:space": "cosine"},
             )

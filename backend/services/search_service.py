@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # Lazy-loaded embedding model
 _embedding_model = None
 _chroma_cache = None  # cache all chroma docs for text search
+
+
+def invalidate_search_cache() -> None:
+    """Invalidate the in-process text index after vector-store mutations."""
+    global _chroma_cache
+    _chroma_cache = None
 
 
 def _get_embedding_model():
@@ -101,7 +107,10 @@ class SearchService:
         if date_from:
             doc_query = doc_query.where(Document.created_at >= datetime.fromisoformat(date_from))
         if date_to:
-            doc_query = doc_query.where(Document.created_at <= datetime.fromisoformat(date_to))
+            parsed_to = datetime.fromisoformat(date_to)
+            if len(date_to) <= 10:
+                parsed_to = datetime.combine(parsed_to.date(), time.max)
+            doc_query = doc_query.where(Document.created_at <= parsed_to)
         doc_query = doc_query.limit(limit)
         result = await db.execute(doc_query)
         docs = result.scalars().all()
@@ -128,6 +137,9 @@ class SearchService:
             for doc in docs:
                 text = doc["document"]
                 meta = doc["metadata"]
+                doc_source = meta.get("source")
+                if source_type and doc_source != source_type:
+                    continue
                 text_lower = text.lower()
                 title = meta.get("title", "")
                 if query_lower in text_lower or query_lower in title.lower():
@@ -143,8 +155,8 @@ class SearchService:
                 results.append(SearchResult(
                     title=title or "Untitled",
                     snippet=snippet,
-                    source=meta.get("source", source_type or "chromadb"),
-                    source_type=meta.get("source", source_type),
+                    source=doc_source or source_type or "chromadb",
+                    source_type=doc_source or source_type,
                     similarity_score=round(score, 4),
                     document_id=0,
                     chunk_id=doc["id"],
@@ -175,6 +187,16 @@ class SearchService:
                     metadata = (results["metadatas"][0] or [{}])[i] if results["metadatas"][0] else {}
                     distance = (results["distances"][0] or [1.0])[i] if results["distances"][0] else 1.0
                     document = (results["documents"][0] or [""])[i] if results["documents"][0] else ""
+                    raw_date = metadata.get("created_at") or metadata.get("timestamp")
+                    if raw_date and (date_from or date_to):
+                        try:
+                            item_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).date()
+                            if date_from and item_date < datetime.fromisoformat(date_from).date():
+                                continue
+                            if date_to and item_date > datetime.fromisoformat(date_to).date():
+                                continue
+                        except ValueError:
+                            logger.debug("Ignoring malformed Chroma date: %s", raw_date)
                     similarity = 1.0 - float(distance)
                     doc_id = metadata.get("document_id", 0)
                     try:
@@ -187,7 +209,7 @@ class SearchService:
                         source=metadata.get("source", source_type or "unknown"),
                         source_type=metadata.get("source", source_type),
                         similarity_score=round(similarity, 4),
-                        document_id=doc_id, chunk_id=None,
+                        document_id=doc_id, chunk_id=chroma_id,
                         url=metadata.get("url"),
                     ))
             return search_results

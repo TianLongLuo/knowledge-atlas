@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import Base, engine
-from routers import agent, auth, documents, graph, notes, search, sync
+from routers import agent, auth, dashboard, documents, graph, notes, search, sync
 
 # ── Logging ─────────────────────────────────────────────────────────
 
@@ -70,13 +70,7 @@ app = FastAPI(
 # CORS — allow frontend dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "*",  # Allow all during development
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +85,37 @@ app.include_router(notes.router)
 app.include_router(sync.router)
 app.include_router(agent.router)
 app.include_router(graph.router)
+app.include_router(dashboard.router)
+
+
+@app.get("/api/ready")
+async def readiness_check():
+    """Dependency-aware readiness probe for reverse proxies/orchestrators."""
+    database_ok = False
+    chroma_ok = False
+    try:
+        from sqlalchemy import text
+
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        database_ok = True
+    except Exception:
+        logger.exception("PostgreSQL readiness check failed")
+    try:
+        from database import get_chroma_collection
+
+        get_chroma_collection().count()
+        chroma_ok = True
+    except Exception:
+        logger.exception("ChromaDB readiness check failed")
+
+    from fastapi.responses import JSONResponse
+
+    ready = database_ok and chroma_ok
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "not_ready", "postgres": database_ok, "chroma": chroma_ok},
+    )
 
 
 # ── Health check ────────────────────────────────────────────────────

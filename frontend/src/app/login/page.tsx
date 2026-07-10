@@ -25,7 +25,7 @@ export default function LoginPage() {
 
     try {
       await login({ username, password });
-      checkAuth();
+      await checkAuth();
       router.push("/");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "登录失败，请重试";

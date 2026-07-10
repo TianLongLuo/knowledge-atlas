@@ -51,13 +51,19 @@ async def start_notion_sync(
             detail="A Notion sync is already in progress",
         )
 
-    # Create or update sync state
-    sync_state = SyncState(
-        source_type="notion",
-        source_id=settings.notion_database_id,
-        status="running",
+    # Reuse the source state; (source_type, source_id) is intentionally unique.
+    state_result = await db.execute(
+        select(SyncState).where(
+            SyncState.source_type == "notion",
+            SyncState.source_id == settings.notion_database_id,
+        )
     )
-    db.add(sync_state)
+    sync_state = state_result.scalar_one_or_none()
+    if sync_state is None:
+        sync_state = SyncState(source_type="notion", source_id=settings.notion_database_id)
+        db.add(sync_state)
+    sync_state.status = "running"
+    sync_state.error_message = None
     await db.commit()
     await db.refresh(sync_state)
 

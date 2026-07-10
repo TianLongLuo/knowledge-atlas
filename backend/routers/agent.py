@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import logging
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -11,6 +14,7 @@ from schemas import AskRequest, AskResponse, Citation
 from services.search_service import SearchService
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -36,12 +40,14 @@ async def ask_question(
         top_k=body.top_k,
         db=db,
     )
+    session_id = body.session_id or uuid.uuid4().hex
 
     if not search_results:
         return AskResponse(
             question=body.question,
             answer="I couldn't find any relevant information in the knowledge base to answer this question.",
             citations=[],
+            session_id=session_id,
         )
 
     # Step 2: Build context string
@@ -69,6 +75,7 @@ async def ask_question(
             ),
             citations=[
                 Citation(
+                    document_id=r.document_id,
                     document_title=r.title,
                     chunk_snippet=r.snippet,
                     source_url=r.url,
@@ -76,6 +83,7 @@ async def ask_question(
                 )
                 for r in search_results
             ],
+            session_id=session_id,
         )
 
     client = AsyncOpenAI(
@@ -92,7 +100,7 @@ async def ask_question(
 
     try:
         response = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=settings.deepseek_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -107,12 +115,14 @@ async def ask_question(
             max_tokens=1500,
         )
         answer = response.choices[0].message.content or ""
-    except Exception as e:
-        answer = f"Error calling DeepSeek API: {str(e)}"
+    except Exception as exc:
+        logger.exception("DeepSeek request failed")
+        raise HTTPException(status_code=502, detail="AI provider is temporarily unavailable") from exc
 
     # Step 4: Build citations
     citations = [
         Citation(
+            document_id=r.document_id,
             document_title=r.title,
             chunk_snippet=r.snippet,
             source_url=r.url,
@@ -121,4 +131,9 @@ async def ask_question(
         for r in search_results
     ]
 
-    return AskResponse(question=body.question, answer=answer, citations=citations)
+    return AskResponse(
+        question=body.question,
+        answer=answer,
+        citations=citations,
+        session_id=session_id,
+    )

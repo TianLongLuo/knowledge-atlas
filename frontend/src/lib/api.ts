@@ -1,83 +1,35 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 
-// Token management
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("auth_token");
-}
-
-export function setToken(token: string): void {
-  localStorage.setItem("auth_token", token);
-}
-
-export function clearToken(): void {
-  localStorage.removeItem("auth_token");
-}
-
-async function apiFetch<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
+    credentials: "include",
   });
-
-  if (res.status === 401) {
-    clearToken();
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
+  if (response.status === 401) {
+    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+      window.location.assign("/login");
     }
-    throw new Error("Unauthorized");
+    throw new Error("登录已过期，请重新登录");
   }
-
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(errorBody.detail || `Request failed: ${res.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(payload.detail || `请求失败 (${response.status})`);
   }
-
-  return res.json();
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
 }
 
-// --- Auth ---
+export interface LoginRequest { username: string; password: string }
+export interface LoginResponse { access_token: string; token_type: string }
 
-export interface LoginRequest {
-  username: string;
-  password: string;
+export function login(data: LoginRequest) {
+  return apiFetch<LoginResponse>("/auth/login", { method: "POST", body: JSON.stringify(data) });
 }
-
-export interface LoginResponse {
-  access_token: string;
-  token_type: string;
-}
-
-export async function login(data: LoginRequest): Promise<LoginResponse> {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({ detail: "登录失败" }));
-    throw new Error(errorBody.detail || "登录失败");
-  }
-
-  const result: LoginResponse = await res.json();
-  setToken(result.access_token);
-  return result;
-}
-
-// --- Dashboard ---
+export function logout() { return apiFetch<void>("/auth/logout", { method: "POST" }); }
+export function checkSession() { return apiFetch<{ username: string }>("/auth/me"); }
 
 export interface DashboardStats {
   total_documents: number;
@@ -85,23 +37,24 @@ export interface DashboardStats {
   last_sync_time: string | null;
   sync_status: string;
 }
+export interface RecentDocument { id: string; title: string; source_type: string; created_at: string }
+export function getDashboardStats() { return apiFetch<DashboardStats>("/dashboard/stats"); }
+export function getRecentDocuments() { return apiFetch<RecentDocument[]>("/dashboard/recent"); }
 
-export interface RecentDocument {
-  id: string;
-  title: string;
+interface RawDocument {
+  id: number;
   source_type: string;
-  created_at: string;
+  source_id?: string | null;
+  title: string;
+  raw_content?: string | null;
+  normalized_content?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  chunks?: ChunkItem[];
+  nodes?: KnowledgeNode[];
+  edges?: KnowledgeEdge[];
 }
-
-export async function getDashboardStats(): Promise<DashboardStats> {
-  return apiFetch<DashboardStats>("/dashboard/stats");
-}
-
-export async function getRecentDocuments(): Promise<RecentDocument[]> {
-  return apiFetch<RecentDocument[]>("/dashboard/recent");
-}
-
-// --- Documents ---
 
 export interface DocumentItem {
   id: string;
@@ -114,208 +67,134 @@ export interface DocumentItem {
   status: string;
   chunk_count: number;
 }
-
-export interface DocumentListResponse {
-  items: DocumentItem[];
-  total: number;
-  page: number;
-  page_size: number;
-}
-
-export interface DocumentDetail {
-  id: string;
-  title: string;
+export interface DocumentListResponse { items: DocumentItem[]; total: number; page: number; page_size: number }
+export interface ChunkItem { id: number; document_id: number; chunk_index: number; chunk_text: string; token_count: number }
+export interface KnowledgeNode { node_id: string; title: string; node_type: string; importance_score: number }
+export interface KnowledgeEdge { id: number; source_node_id: string; target_node_id: string; relation_type: string; confidence: number }
+export interface DocumentDetail extends DocumentItem {
   content: string;
-  source_type: string;
-  file_type: string;
-  file_size: number;
   metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  status: string;
-}
-
-export interface ChunkItem {
-  id: string;
-  document_id: string;
-  content: string;
-  chunk_index: number;
-  metadata: Record<string, unknown>;
-}
-
-export interface KnowledgeNode {
-  id: string;
-  label: string;
-  node_type: string;
-  properties: Record<string, unknown>;
-}
-
-export interface KnowledgeEdge {
-  id: string;
-  source_id: string;
-  target_id: string;
-  relation_type: string;
-  properties: Record<string, unknown>;
-}
-
-export interface DocumentRelations {
+  chunks: ChunkItem[];
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
 }
 
-export async function getDocuments(params: {
-  page?: number;
-  page_size?: number;
-  search?: string;
-  source_type?: string;
-  date_from?: string;
-  date_to?: string;
-}): Promise<DocumentListResponse> {
-  const searchParams = new URLSearchParams();
-  if (params.page) searchParams.set("page", params.page.toString());
-  if (params.page_size) searchParams.set("page_size", params.page_size.toString());
-  if (params.search) searchParams.set("search", params.search);
-  if (params.source_type) searchParams.set("source_type", params.source_type);
-  if (params.date_from) searchParams.set("date_from", params.date_from);
-  if (params.date_to) searchParams.set("date_to", params.date_to);
+function mapDocument(doc: RawDocument): DocumentItem {
+  const content = doc.normalized_content || doc.raw_content || "";
+  return {
+    id: String(doc.id),
+    title: doc.title,
+    source_type: doc.source_type,
+    file_type: String(doc.metadata?.file_type || doc.source_type),
+    file_size: new TextEncoder().encode(content).length,
+    created_at: doc.created_at || doc.updated_at || new Date(0).toISOString(),
+    updated_at: doc.updated_at || doc.created_at || new Date(0).toISOString(),
+    status: "ready",
+    chunk_count: doc.chunks?.length || 0,
+  };
+}
 
-  return apiFetch<DocumentListResponse>(`/documents?${searchParams.toString()}`);
+export async function getDocuments(params: {
+  page?: number; page_size?: number; search?: string; source_type?: string; date_from?: string; date_to?: string;
+}): Promise<DocumentListResponse> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); });
+  const raw = await apiFetch<{ items: RawDocument[]; total: number; page: number; page_size: number }>(`/documents?${query}`);
+  return { ...raw, items: raw.items.map(mapDocument) };
 }
 
 export async function getDocument(id: string): Promise<DocumentDetail> {
-  return apiFetch<DocumentDetail>(`/documents/${id}`);
+  const doc = await apiFetch<RawDocument>(`/documents/${encodeURIComponent(id)}`);
+  const base = mapDocument(doc);
+  return {
+    ...base,
+    content: doc.normalized_content || doc.raw_content || "",
+    metadata: doc.metadata || {},
+    chunks: doc.chunks || [],
+    nodes: doc.nodes || [],
+    edges: doc.edges || [],
+    chunk_count: doc.chunks?.length || 0,
+  };
 }
-
-export async function getDocumentChunks(id: string): Promise<ChunkItem[]> {
-  return apiFetch<ChunkItem[]>(`/documents/${id}/chunks`);
+export function updateDocument(id: string, data: { title?: string; content?: string }) {
+  return apiFetch<RawDocument>(`/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(data) });
 }
-
-export async function getDocumentRelations(id: string): Promise<DocumentRelations> {
-  return apiFetch<DocumentRelations>(`/documents/${id}/relations`);
+export function deleteDocument(id: string) {
+  return apiFetch<{ message: string; id: number }>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
-
-export async function updateDocument(
-  id: string,
-  data: { title?: string; content?: string }
-): Promise<DocumentDetail> {
-  return apiFetch<DocumentDetail>(`/documents/${id}`, {
-    method: "PUT",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function deleteDocument(id: string): Promise<{ message: string; id: string }> {
-  return apiFetch<{ message: string; id: string }>(`/documents/${id}`, {
-    method: "DELETE",
-  });
-}
-
-// --- Search ---
-
-export interface SearchRequest {
-  query: string;
-  search_type: "keyword" | "vector" | "hybrid";
-  top_k?: number;
+export function createNote(data: { title: string; content: string; source?: string; tags?: string }) {
+  return apiFetch<{ id: string; title: string }>("/notes", { method: "POST", body: JSON.stringify(data) });
 }
 
 export interface SearchResultItem {
   document_id: string;
   document_title: string;
-  chunk_id: string;
+  chunk_id: string | null;
   content: string;
   score: number;
   source_type: string;
-  metadata: Record<string, unknown>;
+}
+export interface SearchResponse { results: SearchResultItem[]; total: number; query: string; search_type: string }
+export async function search(params: { query: string; search_type?: string; top_k?: number }): Promise<SearchResponse> {
+  const query = new URLSearchParams({ q: params.query, type: params.search_type || "hybrid" });
+  if (params.top_k) query.set("top_k", String(params.top_k));
+  const raw = await apiFetch<{ query: string; total: number; results: Array<{
+    title: string; snippet: string; source_type?: string | null; similarity_score: number; document_id: number; chunk_id?: string | null;
+  }> }>(`/search?${query}`);
+  return {
+    query: raw.query,
+    total: raw.total,
+    search_type: params.search_type || "hybrid",
+    results: raw.results.map((item) => ({
+      document_id: String(item.document_id), document_title: item.title, chunk_id: item.chunk_id || null,
+      content: item.snippet, score: item.similarity_score, source_type: item.source_type || "unknown",
+    })),
+  };
 }
 
-export interface SearchResponse {
-  results: SearchResultItem[];
-  total: number;
-  query: string;
-  search_type: string;
-}
-
-export async function search(params: {
-  query: string;
-  search_type?: string;
-  top_k?: number;
-}): Promise<SearchResponse> {
-  const sp = new URLSearchParams();
-  sp.set("q", params.query);
-  sp.set("type", params.search_type || "hybrid");
-  if (params.top_k) sp.set("top_k", params.top_k.toString());
-  return apiFetch<SearchResponse>(`/search?${sp.toString()}`);
-}
-
-// --- AI Agent ---
-
-export interface AgentRequest {
-  question: string;
-  session_id?: string;
-  document_id?: string;
-}
-
+export interface AgentRequest { question: string; session_id?: string; document_id?: string; top_k?: number }
 export interface AgentCitation {
-  document_id: string;
-  document_title: string;
-  chunk_id: string;
-  content: string;
-  relevance_score: number;
+  document_id: string; document_title: string; content: string; relevance_score: number; source_url?: string | null;
 }
-
-export interface AgentResponse {
-  answer: string;
-  citations: AgentCitation[];
-  session_id: string;
-}
-
+export interface AgentResponse { question: string; answer: string; citations: AgentCitation[]; session_id: string }
 export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
-  return apiFetch<AgentResponse>("/agent/ask", {
+  const raw = await apiFetch<{ question: string; answer: string; session_id: string; citations: Array<{
+    document_id: number; document_title: string; chunk_snippet: string; similarity_score: number; source_url?: string | null;
+  }> }>("/agent/ask", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, document_id: data.document_id ? Number(data.document_id) : undefined }),
   });
+  return { ...raw, citations: raw.citations.map((citation) => ({
+    document_id: String(citation.document_id), document_title: citation.document_title,
+    content: citation.chunk_snippet, relevance_score: citation.similarity_score, source_url: citation.source_url,
+  })) };
 }
 
-export interface AgentHistoryItem {
-  question: string;
-  answer: string;
-  citations: AgentCitation[];
-  timestamp: string;
-}
-
-export async function getAgentHistory(session_id: string): Promise<AgentHistoryItem[]> {
-  return apiFetch<AgentHistoryItem[]>(`/agent/history/${session_id}`);
-}
-
-// --- Sync ---
-
-export interface SyncStatus {
-  status: string;
-  last_sync_time: string | null;
-  sync_in_progress: boolean;
-  total_synced: number;
-  errors: number;
-}
-
-export interface SyncHistoryItem {
-  id: string;
-  started_at: string;
-  completed_at: string | null;
-  status: string;
-  documents_processed: number;
-  errors: number;
-}
-
+interface RawSyncState { source_type: string; source_id: string; status: string; last_synced_at: string | null; error_message: string | null }
+export interface SyncStatus { status: string; last_sync_time: string | null; sync_in_progress: boolean; total_synced: number; errors: number }
+export interface SyncHistoryItem { id: string; started_at: string; completed_at: string | null; status: string; documents_processed: number; errors: number }
 export async function getSyncStatus(): Promise<SyncStatus> {
-  return apiFetch<SyncStatus>("/sync/status");
+  const states = await apiFetch<RawSyncState[]>("/sync/status");
+  const latest = states[0];
+  return {
+    status: latest?.status === "running" ? "syncing" : latest?.status === "failed" ? "error" : "idle",
+    last_sync_time: latest?.last_synced_at || null,
+    sync_in_progress: latest?.status === "running",
+    total_synced: states.filter((state) => state.status === "completed").length,
+    errors: states.filter((state) => state.status === "failed").length,
+  };
 }
-
-export async function startSync(): Promise<{ message: string; sync_id: string }> {
-  return apiFetch<{ message: string; sync_id: string }>("/sync/start", {
-    method: "POST",
-  });
-}
-
 export async function getSyncHistory(): Promise<SyncHistoryItem[]> {
-  return apiFetch<SyncHistoryItem[]>("/sync/history");
+  const states = await apiFetch<RawSyncState[]>("/sync/status");
+  return states.map((state, index) => ({
+    id: `${state.source_id}-${index}`,
+    started_at: state.last_synced_at || new Date(0).toISOString(),
+    completed_at: state.last_synced_at,
+    status: state.status,
+    documents_processed: state.status === "completed" ? 1 : 0,
+    errors: state.status === "failed" ? 1 : 0,
+  }));
+}
+export function startSync() {
+  return apiFetch<{ message: string; source_type: string; status: string }>("/sync/notion/start", { method: "POST" });
 }

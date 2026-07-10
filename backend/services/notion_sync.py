@@ -7,6 +7,7 @@ PostgreSQL + ChromaDB.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
@@ -177,16 +178,20 @@ class NotionSyncService:
 
         # Generate embeddings and store in ChromaDB
         collection = get_chroma_collection()
-        embedding_model = self._get_embedding_model()
+        embedding_model = await asyncio.to_thread(self._get_embedding_model)
+        vectors = await asyncio.to_thread(
+            lambda: embedding_model.encode([chunk.text for chunk in chunks]).tolist()
+        ) if chunks else []
 
-        for chunk in chunks:
-            # Generate embedding
-            vector = embedding_model.encode(chunk.text).tolist()
+        # Remove stale chunks first. Upsert then makes interrupted retries idempotent.
+        collection.delete(where={"document_id": str(document_id)})
+
+        for chunk, vector in zip(chunks, vectors):
 
             # Store in ChromaDB
             chroma_id = f"notion_{page_id}_chunk_{chunk.index}"
             try:
-                collection.add(
+                collection.upsert(
                     ids=[chroma_id],
                     embeddings=[vector],
                     documents=[chunk.text],
@@ -215,6 +220,11 @@ class NotionSyncService:
             db.add(db_chunk)
 
         await db.commit()
+        from services.search_service import invalidate_search_cache
+        from routers.graph import invalidate_graph_cache
+
+        invalidate_search_cache()
+        invalidate_graph_cache()
         logger.info(f"Synced Notion page: {title} ({len(chunks)} chunks)")
 
     async def _fetch_page_content(self, notion, page_id: str) -> str:
