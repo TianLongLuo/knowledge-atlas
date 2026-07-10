@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.eggs/
+
+# Virtualenv
+backend/venv/
+venv/
+
+# Environment secrets
+.env
+*.env
+!*.env.example
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Caches
+.cache/
