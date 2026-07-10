@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-env-with-at-least-32-random-characters"
     admin_username: str = "admin"
     admin_password_hash: str = ""
-    access_token_expire_minutes: int = Field(default=480, ge=5, le=10080)
+    access_token_expire_minutes: int = Field(default=480, ge=5, le=43200)
     session_cookie_secure: bool = False
 
     host: str = "0.0.0.0"
