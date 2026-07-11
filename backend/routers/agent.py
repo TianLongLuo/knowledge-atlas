@@ -5,8 +5,16 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from openai import AsyncOpenAI
+from fastapi import APIRouter, Depends
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    NotFoundError,
+    RateLimitError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -18,6 +26,23 @@ from services.search_service import SearchService
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
+
+
+def deepseek_error_message(exc: Exception) -> str:
+    """Return an actionable, credential-safe provider error for the UI."""
+    if isinstance(exc, AuthenticationError):
+        return "DeepSeek rejected the API key (HTTP 401). Create a new key and rebuild the backend container."
+    if isinstance(exc, NotFoundError):
+        return "DeepSeek returned HTTP 404. Check DEEPSEEK_BASE_URL and DEEPSEEK_MODEL."
+    if isinstance(exc, RateLimitError):
+        return "DeepSeek rate limit or account balance limit reached (HTTP 429). Check the DeepSeek account."
+    if isinstance(exc, APITimeoutError):
+        return "The backend timed out while connecting to DeepSeek. Check server outbound HTTPS access."
+    if isinstance(exc, APIConnectionError):
+        return "The backend cannot connect to DeepSeek. Check DNS, firewall, proxy, and outbound HTTPS access from the backend container."
+    if isinstance(exc, APIStatusError):
+        return f"DeepSeek returned HTTP {exc.status_code}. Check the API configuration and DeepSeek account status."
+    return "DeepSeek request failed unexpectedly. Check backend logs for the exception type."
 
 
 @router.get("/status", response_model=AgentStatusResponse)
@@ -45,9 +70,9 @@ async def agent_status(_user: str = Depends(get_current_user)):
                 max_tokens=1,
             )
             deepseek_available = True
-        except Exception as exc:  # Keep details short and non-sensitive for the UI.
+        except Exception as exc:
             logger.warning("DeepSeek readiness probe failed: %s", exc)
-            deepseek_error = "DeepSeek API probe failed. Check the API key, base URL, model, and outbound network access."
+            deepseek_error = deepseek_error_message(exc)
     return AgentStatusResponse(
         deepseek_configured=bool(settings.deepseek_api_key),
         deepseek_available=deepseek_available,
@@ -158,10 +183,24 @@ async def ask_question(
         answer = response.choices[0].message.content or ""
     except Exception as exc:
         logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
-        raise HTTPException(
-            status_code=502,
-            detail="DeepSeek request failed. Check DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, outbound network access, then rebuild/restart the backend.",
-        ) from exc
+        diagnostic = deepseek_error_message(exc)
+        return AskResponse(
+            question=body.question,
+            answer=f"DeepSeek is temporarily unavailable: {diagnostic}\n\n"
+            "The vector database is working. These are the most relevant notes:\n\n"
+            + "\n".join(f"- **{r.title}**: {r.snippet[:240]}..." for r in search_results),
+            citations=[
+                Citation(
+                    document_id=r.document_id,
+                    document_title=r.title,
+                    chunk_snippet=r.snippet,
+                    source_url=r.url,
+                    similarity_score=r.similarity_score,
+                )
+                for r in search_results
+            ],
+            session_id=session_id,
+        )
 
     # Step 4: Build citations
     citations = [

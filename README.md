@@ -68,6 +68,17 @@ If the assistant still fails, check backend logs:
 docker compose logs --tail=200 backend
 ```
 
+Test DNS and HTTPS from inside the same backend container:
+
+```bash
+docker compose exec backend python -c "import socket; print(socket.gethostbyname('api.deepseek.com'))"
+docker compose exec backend python -c "import urllib.request; print(urllib.request.urlopen('https://api.deepseek.com', timeout=10).status)"
+```
+
+The UI reports safe, specific diagnostics for HTTP 401 (invalid key), HTTP 404
+(base URL/model), HTTP 429 (rate or account limit), connection/DNS errors, and
+timeouts. Provider response bodies and credentials are never returned to the browser.
+
 Most failures are one of: expired key, wrong `DEEPSEEK_BASE_URL`, wrong `DEEPSEEK_MODEL`, server egress blocked, or a backend container that was not rebuilt after editing `.env`.
 
 ## Local Development

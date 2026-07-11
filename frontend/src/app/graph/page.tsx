@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getDocument } from "@/lib/api";
+import type { DocumentDetail } from "@/lib/api";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface GraphNode {
   id: string;
@@ -20,48 +22,10 @@ interface GraphData {
   edges: GraphEdge[];
   stats: { node_count: number; edge_count: number; isolated_count: number; groups: Record<string, number> };
 }
-interface LayoutNode extends GraphNode { x: number; y: number; rank: number }
-
-const COLORS: Record<string, string> = {
-  "Business": "#f97316",
-  "Product": "#2563eb",
-  "Operations": "#7c3aed",
-  "Marketing": "#db2777",
-  "Thinking": "#059669",
-  "Life": "#d97706",
-  "Technology": "#0891b2",
-  "Learning": "#4f46e5",
-  "Writing": "#dc2626",
-  "Notes": "#65a30d",
-};
-
-const GROUP_LABELS: Record<string, string> = {
-  "商业": "Business",
-  "产品": "Product",
-  "运营": "Operations",
-  "营销": "Marketing",
-  "思考": "Thinking",
-  "生活": "Life",
-  "技术": "Technology",
-  "学习": "Learning",
-  "创作": "Writing",
-  "随笔": "Notes",
-};
+interface LayoutNode extends GraphNode { x: number; y: number }
 
 const WIDTH = 1180;
 const HEIGHT = 680;
-
-function englishGroup(group: string) {
-  return GROUP_LABELS[group] || group || "Other";
-}
-
-function nodeColor(group: string) {
-  return COLORS[englishGroup(group)] || "#64748b";
-}
-
-function trimLabel(label: string, max = 24) {
-  return label.length > max ? `${label.slice(0, max - 1)}...` : label;
-}
 
 function stableJitter(id: string) {
   let hash = 2166136261;
@@ -76,11 +40,27 @@ export default function GraphPage() {
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [filterGroup, setFilterGroup] = useState<string | null>(null);
-  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [minSimilarity, setMinSimilarity] = useState(0.5);
-  const [showIsolated, setShowIsolated] = useState(false);
   const [query, setQuery] = useState("");
+  const [readerOpen, setReaderOpen] = useState(false);
+  const [readerLoading, setReaderLoading] = useState(false);
+  const [readerDocument, setReaderDocument] = useState<DocumentDetail | null>(null);
+  const [readerError, setReaderError] = useState("");
+
+  const openReader = useCallback(async (node: GraphNode) => {
+    setSelectedId(node.id);
+    setReaderOpen(true);
+    setReaderLoading(true);
+    setReaderError("");
+    setReaderDocument(null);
+    try {
+      setReaderDocument(await getDocument(String(node.document_id)));
+    } catch (cause) {
+      setReaderError(cause instanceof Error ? cause.message : "Document failed to load.");
+    } finally {
+      setReaderLoading(false);
+    }
+  }, []);
 
   const fetchData = useCallback(async (threshold: number) => {
     setLoading(true);
@@ -91,7 +71,6 @@ export default function GraphPage() {
       );
       setData(graph);
       setSelectedId(null);
-      setFocusNodeId(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Knowledge map failed to load.");
     } finally {
@@ -105,85 +84,45 @@ export default function GraphPage() {
     return () => window.clearTimeout(timer);
   }, [minSimilarity, fetchData]);
 
-  const groups = useMemo(() => Object.keys(data?.stats.groups || {}).sort(), [data]);
-
   const visibleData = useMemo(() => {
     if (!data) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
-    let allowed = new Set(data.nodes
-      .filter((node) => (showIsolated || node.degree > 0) && (!filterGroup || node.group === filterGroup))
-      .map((node) => node.id));
-    if (focusNodeId) {
-      const local = new Set<string>([focusNodeId]);
-      data.edges.forEach((edge) => {
-        if (edge.source === focusNodeId) local.add(edge.target);
-        if (edge.target === focusNodeId) local.add(edge.source);
-      });
-      allowed = new Set([...allowed].filter((id) => local.has(id)));
-    }
+    const allowed = new Set(data.nodes.filter((node) => node.degree > 0).map((node) => node.id));
     return {
       nodes: data.nodes.filter((node) => allowed.has(node.id)),
       edges: data.edges.filter((edge) => allowed.has(edge.source) && allowed.has(edge.target)),
     };
-  }, [data, filterGroup, focusNodeId, showIsolated]);
+  }, [data]);
 
   const layout = useMemo(() => {
-    const byGroup = new Map<string, GraphNode[]>();
-    visibleData.nodes.forEach((node) => {
-      const key = englishGroup(node.group);
-      const bucket = byGroup.get(key) || [];
-      bucket.push(node);
-      byGroup.set(key, bucket);
-    });
-
-    const groupNames = [...byGroup.keys()].sort();
-    const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(groupNames.length || 1))));
-    const rows = Math.max(1, Math.ceil((groupNames.length || 1) / cols));
-    const nodes: LayoutNode[] = [];
-    const centers = new Map<string, { x: number; y: number }>();
-
-    groupNames.forEach((group, groupIndex) => {
-      const col = groupIndex % cols;
-      const row = Math.floor(groupIndex / cols);
-      const center = {
-        x: 120 + col * ((WIDTH - 240) / Math.max(cols - 1, 1)),
-        y: 110 + row * ((HEIGHT - 220) / Math.max(rows - 1, 1)),
+    const sorted = [...visibleData.nodes].sort((a, b) => b.degree - a.degree || b.size - a.size);
+    const nodes: LayoutNode[] = sorted.map((node, index) => {
+      const angle = index * 2.399963 + stableJitter(node.id) * 0.45;
+      const radius = 34 + Math.sqrt(index) * 47;
+      return {
+        ...node,
+        x: WIDTH / 2 + Math.cos(angle) * Math.min(radius * 1.45, WIDTH * 0.43),
+        y: HEIGHT / 2 + Math.sin(angle) * Math.min(radius, HEIGHT * 0.42),
       };
-      centers.set(group, center);
-
-      const groupNodes = (byGroup.get(group) || []).sort((a, b) => b.degree - a.degree || b.size - a.size);
-      const maxRadius = Math.min(130, 50 + groupNodes.length * 2.4);
-      groupNodes.forEach((node, index) => {
-        const angle = index * 2.399963 + stableJitter(node.id) * 0.35;
-        const radius = index === 0 ? 0 : Math.min(maxRadius, 28 + Math.sqrt(index) * 18);
-        nodes.push({
-          ...node,
-          rank: index,
-          x: Math.max(24, Math.min(WIDTH - 24, center.x + Math.cos(angle) * radius)),
-          y: Math.max(24, Math.min(HEIGHT - 24, center.y + Math.sin(angle) * radius)),
-        });
-      });
     });
 
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-    return { nodes, nodeMap, centers };
+    return { nodes, nodeMap };
   }, [visibleData.nodes]);
 
   const selected = selectedId ? layout.nodeMap.get(selectedId) || null : null;
   const hovered = hoveredId ? layout.nodeMap.get(hoveredId) || null : null;
-  const connected = selected
+  const focused = hovered || selected;
+  const connected = focused
     ? visibleData.edges
-        .filter((edge) => edge.source === selected.id || edge.target === selected.id)
+        .filter((edge) => edge.source === focused.id || edge.target === focused.id)
         .sort((a, b) => b.weight - a.weight)
-        .slice(0, 12)
+        .slice(0, 6)
     : [];
   const connectedIds = new Set(connected.flatMap((edge) => [edge.source, edge.target]));
+  const connectedEdgeKeys = new Set(connected.map((edge) => `${edge.source}:${edge.target}`));
   const searchResults = query.trim() && data
     ? data.nodes.filter((node) => node.label.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 7)
     : [];
-  const labelIds = new Set(layout.nodes.filter((node) => node.rank < 2 || node.degree >= 6).map((node) => node.id));
-  if (selected) labelIds.add(selected.id);
-  if (hovered) labelIds.add(hovered.id);
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -204,24 +143,13 @@ export default function GraphPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => setFilterGroup(null)} className={`rounded px-3 py-1 text-xs ${!filterGroup ? "bg-blue-600 text-white" : "bg-card text-muted-foreground"}`}>All</button>
-        {groups.map((group) => (
-          <button key={group} onClick={() => setFilterGroup(filterGroup === group ? null : group)}
-            className="rounded border px-3 py-1 text-xs" style={{ borderColor: `${nodeColor(group)}66`, color: nodeColor(group) }}>
-            {englishGroup(group)} {data?.stats.groups[group] || 0}
-          </button>
-        ))}
-        {focusNodeId && <button onClick={() => setFocusNodeId(null)} className="rounded bg-amber-500/15 px-3 py-1 text-xs text-amber-700">Exit local map</button>}
-        <button onClick={() => setShowIsolated((value) => !value)} className={`rounded border px-3 py-1 text-xs ${showIsolated ? "border-blue-400 bg-blue-500/15 text-blue-700" : "border-border bg-card text-muted-foreground"}`}>
-          {showIsolated ? "Hide isolated" : `Show isolated ${data?.stats.isolated_count || 0}`}
-        </button>
-        <div className="relative ml-auto min-w-56">
+      <div className="flex justify-end">
+        <div className="relative min-w-72">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a node..."
             className="w-full rounded border border-border bg-card px-3 py-1.5 text-xs outline-none focus:border-blue-500" />
           {searchResults.length > 0 && (
             <div className="absolute right-0 top-full z-20 mt-1 w-full rounded border border-border bg-popover p-1 shadow-xl">
-              {searchResults.map((node) => <button key={node.id} onClick={() => { setSelectedId(node.id); setFocusNodeId(node.id); setQuery(""); }}
+              {searchResults.map((node) => <button key={node.id} onClick={() => { setQuery(""); setSelectedId(node.id); }}
                 className="block w-full truncate rounded px-2 py-1.5 text-left text-xs hover:bg-accent">{node.label}</button>)}
             </div>
           )}
@@ -240,75 +168,61 @@ export default function GraphPage() {
               </filter>
             </defs>
             <rect width={WIDTH} height={HEIGHT} fill="#f8fafc" />
-            {[...layout.centers.entries()].map(([group, center]) => (
-              <g key={group}>
-                <circle cx={center.x} cy={center.y} r="150" fill={COLORS[group] || "#64748b"} opacity="0.055" />
-                <text x={center.x - 138} y={center.y - 128} fill="#64748b" fontSize="13" fontWeight="600">{group}</text>
-              </g>
-            ))}
             {visibleData.edges.map((edge) => {
               const source = layout.nodeMap.get(edge.source);
               const target = layout.nodeMap.get(edge.target);
               if (!source || !target) return null;
-              const active = selected ? edge.source === selected.id || edge.target === selected.id : false;
+              if (!connectedEdgeKeys.has(`${edge.source}:${edge.target}`)) return null;
               return (
                 <line key={`${edge.source}:${edge.target}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y}
-                  stroke={active ? "#2563eb" : "#94a3b8"} strokeWidth={active ? 2.2 : Math.max(0.7, edge.weight * 1.8)}
-                  strokeOpacity={active ? 0.65 : 0.2} />
+                  stroke="#2563eb" strokeWidth={Math.max(1.2, edge.weight * 2.4)} strokeOpacity="0.5" />
               );
             })}
             {layout.nodes.map((node) => {
-              const active = selected?.id === node.id;
-              const connectedToSelected = selected ? connectedIds.has(node.id) : false;
+              const active = focused?.id === node.id;
+              const connectedToSelected = focused ? connectedIds.has(node.id) : false;
               const radius = Math.max(5, Math.min(17, 5 + node.degree * 0.9 + node.size * 0.12));
-              const muted = selected && !active && !connectedToSelected;
+              const muted = focused && !active && !connectedToSelected;
               return (
-                <g key={node.id} onMouseEnter={() => setHoveredId(node.id)} onMouseLeave={() => setHoveredId(null)}
-                  onClick={() => setSelectedId(node.id)} onDoubleClick={() => router.push(`/documents/${node.document_id}`)}
+                <g key={node.id} onMouseEnter={() => { setHoveredId(node.id); setSelectedId(node.id); }} onMouseLeave={() => setHoveredId(null)}
+                  onClick={() => setSelectedId(node.id)}
                   className="cursor-pointer">
                   <circle cx={node.x} cy={node.y} r={radius + (active ? 7 : 3)} fill="white" opacity={muted ? 0.45 : 1} />
-                  <circle cx={node.x} cy={node.y} r={radius} fill={nodeColor(node.group)} opacity={muted ? 0.28 : 0.9} filter={active ? "url(#softShadow)" : undefined} />
+                  <circle cx={node.x} cy={node.y} r={radius} fill={active ? "#2563eb" : connectedToSelected ? "#8b5cf6" : "#94a3b8"} opacity={muted ? 0.2 : 0.9} filter={active ? "url(#softShadow)" : undefined} />
                   {active && <circle cx={node.x} cy={node.y} r={radius + 7} fill="none" stroke="#2563eb" strokeWidth="2.5" />}
-                  {labelIds.has(node.id) && (
-                    <text x={node.x + radius + 7} y={node.y + 4} fill="#0f172a" fontSize="12" fontWeight={active ? 700 : 500}
-                      paintOrder="stroke" stroke="#f8fafc" strokeWidth="4">
-                      {trimLabel(node.label)}
-                    </text>
-                  )}
                 </g>
               );
             })}
           </svg>
           <div className="absolute bottom-3 left-3 rounded bg-white/85 px-2 py-1 text-[11px] text-slate-500 shadow-sm">
-            Click for details · Double-click to open document · Labels appear only on important or focused nodes
+            Hover a node to reveal its six strongest links · Click to pin the selection
           </div>
         </div>
 
         <aside className="rounded-lg border border-border bg-card p-4">
-          {selected ? (
+          {focused ? (
             <div className="space-y-4">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="h-3 w-3 rounded-full" style={{ backgroundColor: nodeColor(selected.group) }} />
-                  <span className="text-xs uppercase tracking-wide text-muted-foreground">{englishGroup(selected.group)}</span>
+                  <span className="h-3 w-3 rounded-full bg-blue-600" />
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">Selected note</span>
                 </div>
-                <h2 className="mt-2 text-lg font-semibold leading-tight">{selected.label}</h2>
-                <p className="mt-1 text-xs text-muted-foreground">{selected.degree} links · document #{selected.document_id}</p>
+                <h2 className="mt-2 text-lg font-semibold leading-tight">{focused.label}</h2>
+                <p className="mt-1 text-xs text-muted-foreground">{focused.degree} links · document #{focused.document_id}</p>
               </div>
-              {selected.snippet && <p className="text-sm leading-relaxed text-muted-foreground">{selected.snippet}</p>}
+              {focused.snippet && <p className="text-sm leading-relaxed text-muted-foreground">{focused.snippet}</p>}
               <div className="flex gap-2">
-                <button onClick={() => setFocusNodeId(selected.id)} className="rounded border border-border px-3 py-1.5 text-xs hover:bg-accent">Local map</button>
-                <button onClick={() => router.push(`/documents/${selected.document_id}`)} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white">Open document</button>
+                <button onClick={() => void openReader(focused)} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white">Read this note</button>
               </div>
               <div>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Strongest links</h3>
                 <div className="space-y-1.5">
                   {connected.length === 0 && <p className="text-xs text-muted-foreground">No visible links for this filter.</p>}
                   {connected.map((edge) => {
-                    const otherId = edge.source === selected.id ? edge.target : edge.source;
+                    const otherId = edge.source === focused.id ? edge.target : edge.source;
                     const node = layout.nodeMap.get(otherId);
                     return node ? (
-                      <button key={`${edge.source}:${edge.target}`} onClick={() => setSelectedId(node.id)}
+                      <button key={`${edge.source}:${edge.target}`} onClick={() => void openReader(node)}
                         className="flex w-full items-center justify-between gap-3 rounded border border-border bg-background px-2 py-1.5 text-left text-xs hover:bg-accent">
                         <span className="truncate">{node.label}</span>
                         <span className="shrink-0 text-muted-foreground">{(edge.weight * 100).toFixed(0)}%</span>
@@ -326,6 +240,27 @@ export default function GraphPage() {
           )}
         </aside>
       </div>
+
+      <Dialog open={readerOpen} onOpenChange={setReaderOpen}>
+        <DialogContent className="max-h-[90vh] overflow-hidden sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>{readerDocument?.title || selected?.label || "Note"}</DialogTitle>
+            <DialogDescription>
+              {readerDocument ? `${readerDocument.source_type} · Updated ${new Date(readerDocument.updated_at).toLocaleString("en-US")}` : "Knowledge Atlas note reader"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[68vh] overflow-y-auto rounded-lg border border-border bg-background p-5">
+            {readerLoading && <p className="text-sm text-muted-foreground">Loading note...</p>}
+            {readerError && <p className="text-sm text-red-600">{readerError}</p>}
+            {readerDocument && <article className="whitespace-pre-wrap text-sm leading-7 text-foreground">{readerDocument.content || "This note has no readable content."}</article>}
+          </div>
+          {readerDocument && (
+            <div className="flex justify-end">
+              <button onClick={() => router.push(`/documents/${readerDocument.id}`)} className="rounded border border-border px-3 py-1.5 text-xs hover:bg-accent">Open full document page</button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
