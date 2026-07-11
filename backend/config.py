@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-chat"
+    deepseek_timeout_seconds: float = Field(default=45, ge=5, le=180)
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     secret_key: str = "change-me-in-env-with-at-least-32-random-characters"
@@ -59,8 +60,8 @@ class Settings(BaseSettings):
 
     embedding_model: str = "all-MiniLM-L6-v2"
     graph_default_limit: int = Field(default=180, ge=10, le=500)
-    graph_max_edges: int = Field(default=1200, ge=10, le=5000)
-    graph_neighbors_per_node: int = Field(default=12, ge=2, le=50)
+    graph_max_edges: int = Field(default=450, ge=10, le=5000)
+    graph_neighbors_per_node: int = Field(default=6, ge=2, le=50)
 
     @field_validator("cors_origins")
     @classmethod

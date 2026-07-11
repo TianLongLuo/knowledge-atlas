@@ -116,7 +116,7 @@ def _node_identity(chroma_id: str, metadata: dict) -> tuple[str, int]:
 @router.get("/full", response_model=GraphResponse)
 async def get_full_graph(
     limit: int = Query(default=settings.graph_default_limit, ge=10, le=500),
-    min_similarity: float = Query(default=0.35, ge=0.05, le=0.95),
+    min_similarity: float = Query(default=0.45, ge=0.05, le=0.95),
     neighbors: int = Query(default=settings.graph_neighbors_per_node, ge=2, le=50),
     max_edges: int = Query(default=settings.graph_max_edges, ge=10, le=5000),
     _user: str = Depends(get_current_user),

@@ -65,6 +65,7 @@ class SearchService:
         source_type: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        document_id: int | None = None,
         top_k: int = 10,
         db: AsyncSession | None = None,
     ) -> list[SearchResult]:
@@ -85,7 +86,7 @@ class SearchService:
                     seen.add(r.title)
 
         if search_type in ("hybrid", "vector"):
-            vr = await self._vector_search(query, source_type, date_from, date_to, top_k, db)
+            vr = await self._vector_search(query, source_type, date_from, date_to, document_id, top_k, db)
             seen = {(r.document_id, r.chunk_id) for r in results}
             for r in vr:
                 if (r.document_id, r.chunk_id) not in seen:
@@ -169,13 +170,21 @@ class SearchService:
 
     async def _vector_search(
         self, query: str, source_type: str | None, date_from: str | None,
-        date_to: str | None, limit: int, db: AsyncSession | None,
+        date_to: str | None, document_id: int | None, limit: int, db: AsyncSession | None,
     ) -> list[SearchResult]:
         try:
             model = _get_embedding_model()
             query_embedding = model.encode(query).tolist()
             collection = get_chroma_collection()
-            where_filter = {"source": source_type} if source_type else None
+            filters = []
+            if source_type:
+                filters.append({"source": source_type})
+            if document_id is not None:
+                # Chroma metadata can retain numbers or strings depending on
+                # the original importer; the numeric representation is used by
+                # this application's sync and note writers.
+                filters.append({"document_id": document_id})
+            where_filter = None if not filters else filters[0] if len(filters) == 1 else {"$and": filters}
             results = collection.query(
                 query_embeddings=[query_embedding], n_results=limit,
                 where=where_filter, include=["documents", "metadatas", "distances"],

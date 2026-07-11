@@ -10,11 +10,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
 from database import get_db
-from schemas import AskRequest, AskResponse, Citation
+from config import settings
+from database import get_chroma_collection
+from schemas import AgentStatusResponse, AskRequest, AskResponse, Citation
 from services.search_service import SearchService
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
+
+
+@router.get("/status", response_model=AgentStatusResponse)
+async def agent_status(_user: str = Depends(get_current_user)):
+    """Expose readiness without exposing credentials or provider responses."""
+    try:
+        vector_count = get_chroma_collection().count()
+    except Exception:
+        logger.exception("Unable to inspect ChromaDB for agent readiness")
+        vector_count = 0
+    return AgentStatusResponse(
+        deepseek_configured=bool(settings.deepseek_api_key),
+        vector_store_available=vector_count > 0,
+        vector_document_count=vector_count,
+        model=settings.deepseek_model,
+    )
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -38,6 +56,7 @@ async def ask_question(
         query=body.question,
         search_type="vector",
         top_k=body.top_k,
+        document_id=body.document_id,
         db=db,
     )
     session_id = body.session_id or uuid.uuid4().hex
@@ -61,7 +80,6 @@ async def ask_question(
     context = "\n---\n".join(context_parts)
 
     # Step 3: Call DeepSeek
-    from config import settings
     from openai import AsyncOpenAI
 
     if not settings.deepseek_api_key:
@@ -89,6 +107,8 @@ async def ask_question(
     client = AsyncOpenAI(
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
+        timeout=settings.deepseek_timeout_seconds,
+        max_retries=2,
     )
 
     system_prompt = (
@@ -116,8 +136,11 @@ async def ask_question(
         )
         answer = response.choices[0].message.content or ""
     except Exception as exc:
-        logger.exception("DeepSeek request failed")
-        raise HTTPException(status_code=502, detail="AI provider is temporarily unavailable") from exc
+        logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
+        raise HTTPException(
+            status_code=502,
+            detail="DeepSeek 请求失败。请检查服务器的 DEEPSEEK_API_KEY、DEEPSEEK_BASE_URL、DEEPSEEK_MODEL，然后重启后端。",
+        ) from exc
 
     # Step 4: Build citations
     citations = [

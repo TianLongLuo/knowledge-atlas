@@ -115,6 +115,15 @@ class AskResponse(BaseModel):
     session_id: str
 
 
+class AgentStatusResponse(BaseModel):
+    """Non-sensitive readiness details for the AI assistant."""
+
+    deepseek_configured: bool
+    vector_store_available: bool
+    vector_document_count: int = 0
+    model: str
+
+
 # ── Sync ────────────────────────────────────────────────────────────
 
 

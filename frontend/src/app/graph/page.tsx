@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { apiFetch } from "@/lib/api";
 
 interface GraphNode {
@@ -29,8 +28,6 @@ interface SimNode {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
   mesh: THREE.Mesh;
-  label: CSS2DObject;
-  labelElement: HTMLDivElement;
 }
 interface SimEdge { data: GraphEdge; source: SimNode; target: SimNode }
 
@@ -72,7 +69,8 @@ export default function GraphPage() {
   const [filterGroup, setFilterGroup] = useState<string | null>(null);
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [running, setRunning] = useState(true);
-  const [minSimilarity, setMinSimilarity] = useState(0.35);
+  const [minSimilarity, setMinSimilarity] = useState(0.45);
+  const [showIsolated, setShowIsolated] = useState(false);
   const [query, setQuery] = useState("");
 
   useEffect(() => { runningRef.current = running; }, [running]);
@@ -82,7 +80,7 @@ export default function GraphPage() {
     setError("");
     try {
       const graph = await apiFetch<GraphData>(
-        `/graph/full?limit=240&neighbors=12&min_similarity=${threshold}&max_edges=1400`,
+        `/graph/full?limit=180&neighbors=5&min_similarity=${threshold}&max_edges=360`,
       );
       setData(graph);
       setSelected(null);
@@ -95,7 +93,7 @@ export default function GraphPage() {
     }
   }, []);
 
-  useEffect(() => { void fetchData(0.35); }, [fetchData]);
+  useEffect(() => { void fetchData(0.45); }, [fetchData]);
   useEffect(() => {
     if (!data) return;
     const timer = window.setTimeout(() => { void fetchData(minSimilarity); }, 350);
@@ -107,7 +105,9 @@ export default function GraphPage() {
   const groups = useMemo(() => Object.keys(data?.stats.groups || {}).sort(), [data]);
   const visibleData = useMemo(() => {
     if (!data) return { nodes: [], edges: [] };
-    let allowed = new Set(data.nodes.filter((node) => !filterGroup || node.group === filterGroup).map((node) => node.id));
+    let allowed = new Set(data.nodes
+      .filter((node) => (showIsolated || node.degree > 0) && (!filterGroup || node.group === filterGroup))
+      .map((node) => node.id));
     if (focusNodeId) {
       const local = new Set<string>([focusNodeId]);
       data.edges.forEach((edge) => {
@@ -120,7 +120,7 @@ export default function GraphPage() {
       nodes: data.nodes.filter((node) => allowed.has(node.id)),
       edges: data.edges.filter((edge) => allowed.has(edge.source) && allowed.has(edge.target)),
     };
-  }, [data, filterGroup, focusNodeId]);
+  }, [data, filterGroup, focusNodeId, showIsolated]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -139,18 +139,12 @@ export default function GraphPage() {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
-    const labelRenderer = new CSS2DRenderer();
-    labelRenderer.domElement.className = "graph-label-layer";
-    Object.assign(labelRenderer.domElement.style, { position: "absolute", inset: "0", pointerEvents: "none" });
-    container.appendChild(labelRenderer.domElement);
-
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.075;
     controls.minDistance = 35;
     controls.maxDistance = 1200;
-    controls.autoRotate = !focusNodeId;
-    controls.autoRotateSpeed = 0.2;
+    controls.autoRotate = false;
     controlsRef.current = controls;
 
     scene.add(new THREE.HemisphereLight(0x93c5fd, 0x111827, 2.1));
@@ -167,9 +161,6 @@ export default function GraphPage() {
 
     const sphereGeometry = new THREE.SphereGeometry(3.6, 14, 10);
     const materials = new Map<string, THREE.MeshPhongMaterial>();
-    const importantLabels = new Set(
-      [...visibleData.nodes].sort((a, b) => b.degree - a.degree).slice(0, 36).map((node) => node.id),
-    );
     const simNodes: SimNode[] = [];
     const nodeMap = new Map<string, SimNode>();
 
@@ -188,17 +179,7 @@ export default function GraphPage() {
       mesh.userData.nodeId = node.id;
       scene.add(mesh);
 
-      const labelElement = document.createElement("div");
-      labelElement.textContent = node.label;
-      labelElement.className = "rounded border px-1.5 py-0.5 text-[10px] text-slate-200 backdrop-blur-sm";
-      labelElement.style.background = "rgba(7, 16, 31, .78)";
-      labelElement.style.borderColor = `${color}55`;
-      labelElement.style.display = importantLabels.has(node.id) ? "block" : "none";
-      const label = new CSS2DObject(labelElement);
-      label.position.set(0, 7 * scale, 0);
-      mesh.add(label);
-
-      const simNode = { index, data: node, pos: position, vel: new THREE.Vector3(), mesh, label, labelElement };
+      const simNode = { index, data: node, pos: position, vel: new THREE.Vector3(), mesh };
       simNodes.push(simNode);
       nodeMap.set(node.id, simNode);
     });
@@ -247,7 +228,6 @@ export default function GraphPage() {
       const hit = pickNode();
       setSelected(hit?.data || null);
       if (hit) {
-        controls.autoRotate = false;
         controls.target.copy(hit.pos);
         const direction = camera.position.clone().sub(hit.pos).normalize();
         camera.position.copy(hit.pos).add(direction.multiplyScalar(125));
@@ -267,7 +247,6 @@ export default function GraphPage() {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
-      labelRenderer.setSize(width, height);
     };
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(container);
@@ -338,19 +317,16 @@ export default function GraphPage() {
         if (next !== hovered) {
           if (hovered) {
             hovered.mesh.scale.multiplyScalar(1 / 1.35);
-            if (!importantLabels.has(hovered.data.id)) hovered.labelElement.style.display = "none";
           }
           hovered = next;
           if (hovered) {
             hovered.mesh.scale.multiplyScalar(1.35);
-            hovered.labelElement.style.display = "block";
           }
           container.style.cursor = hovered ? "pointer" : "grab";
         }
       }
       controls.update();
       renderer.render(scene, camera);
-      labelRenderer.render(scene, camera);
     };
     render();
 
@@ -389,7 +365,7 @@ export default function GraphPage() {
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <label className="flex items-center gap-2 text-muted-foreground">
             相似度
-            <input type="range" min="0.15" max="0.75" step="0.05" value={minSimilarity}
+            <input type="range" min="0.35" max="0.8" step="0.05" value={minSimilarity}
               onChange={(event) => setMinSimilarity(Number(event.target.value))} className="w-24 accent-blue-500" />
             <span className="w-8">{minSimilarity.toFixed(2)}</span>
           </label>
@@ -410,6 +386,9 @@ export default function GraphPage() {
           </button>
         ))}
         {focusNodeId && <button onClick={() => setFocusNodeId(null)} className="rounded bg-amber-500/15 px-3 py-1 text-xs text-amber-400">退出局部图</button>}
+        <button onClick={() => setShowIsolated((value) => !value)} className={`rounded border px-3 py-1 text-xs ${showIsolated ? "border-blue-400 bg-blue-500/15 text-blue-700" : "border-border bg-card text-muted-foreground"}`}>
+          {showIsolated ? "隐藏孤立节点" : `显示孤立节点 ${data?.stats.isolated_count || 0}`}
+        </button>
         <div className="relative ml-auto min-w-52">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="查找节点…"
             className="w-full rounded border border-border bg-card px-3 py-1.5 text-xs outline-none focus:border-blue-500" />
@@ -428,7 +407,7 @@ export default function GraphPage() {
         {!loading && !error && visibleData.nodes.length === 0 && <div className="absolute inset-0 z-10 grid place-items-center text-sm text-slate-400">当前筛选没有可展示节点</div>}
         <div ref={containerRef} className="h-[72vh] min-h-[520px] w-full" />
         <div className="pointer-events-none absolute bottom-3 left-3 flex gap-4 text-[11px] text-slate-500">
-          <span>拖拽旋转</span><span>滚轮缩放</span><span>单击聚焦</span><span>双击打开文档</span>
+          <span>拖拽旋转</span><span>滚轮缩放</span><span>单击查看详情</span><span>双击打开文档</span>
         </div>
       </div>
 

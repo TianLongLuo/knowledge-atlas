@@ -157,6 +157,8 @@ export interface AgentCitation {
   document_id: string; document_title: string; content: string; relevance_score: number; source_url?: string | null;
 }
 export interface AgentResponse { question: string; answer: string; citations: AgentCitation[]; session_id: string }
+export interface AgentStatus { deepseek_configured: boolean; vector_store_available: boolean; vector_document_count: number; model: string }
+export function getAgentStatus() { return apiFetch<AgentStatus>("/agent/status"); }
 export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
   const raw = await apiFetch<{ question: string; answer: string; session_id: string; citations: Array<{
     document_id: number; document_title: string; chunk_snippet: string; similarity_score: number; source_url?: string | null;

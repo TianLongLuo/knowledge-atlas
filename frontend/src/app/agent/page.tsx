@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { askAgent, AgentResponse, AgentCitation } from "@/lib/api";
+import { askAgent, getAgentStatus, AgentResponse, AgentCitation, AgentStatus } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ export default function AgentPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [status, setStatus] = useState<AgentStatus | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // If coming from document detail, pre-fill with context
@@ -33,6 +34,10 @@ export default function AgentPage() {
       setInput(`请分析这篇文档 (${docId})`);
     }
   }, [docId]);
+
+  useEffect(() => {
+    void getAgentStatus().then(setStatus).catch(() => setStatus(null));
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -92,6 +97,11 @@ export default function AgentPage() {
         <p className="text-muted-foreground mt-1">
           向 AI 提问，获取基于知识库的智能回答
         </p>
+        {status && (
+          <p className={`mt-2 text-xs ${status.deepseek_configured && status.vector_store_available ? "text-emerald-700" : "text-amber-700"}`}>
+            {status.deepseek_configured ? "DeepSeek 已配置" : "DeepSeek 尚未配置"} · {status.vector_store_available ? `已连接向量知识库（${status.vector_document_count} 条向量）` : "向量知识库为空或不可用"}
+          </p>
+        )}
         {docId && (
           <Badge variant="secondary" className="mt-2">
             <FileText className="h-3 w-3 mr-1" />

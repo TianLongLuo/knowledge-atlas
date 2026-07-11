@@ -30,6 +30,21 @@ docker compose ps
 
 配置了 `NOTION_API_KEY` 和 `NOTION_DATABASE_ID` 后，服务会在启动时同步一次，并按 `NOTION_AUTO_SYNC_INTERVAL_MINUTES`（默认 60 分钟）持续增量同步；无需在网页里手动点击。
 
+### DeepSeek 与现有向量知识库
+
+在服务器根目录的 `.env` 中填写**新生成的** DeepSeek 密钥（不要提交到 Git）：
+
+```dotenv
+DEEPSEEK_API_KEY=新生成的密钥
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_TIMEOUT_SECONDS=45
+# 必须与当前 Chroma 数据库建立索引时使用的模型一致；否则请重新索引。
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+更新后执行 `docker compose up -d --build backend`。登录后打开 AI 助手，页面会显示 DeepSeek 和 Chroma 向量库的非敏感连接状态；密钥、完整请求和模型响应不会被该状态接口返回。
+
 ## 本地开发
 
 后端：

@@ -225,7 +225,7 @@ export default function DocumentDetailPage() {
               placeholder="文档内容..."
             />
           ) : (
-            <div className="max-w-none whitespace-pre-wrap text-sm leading-relaxed font-[ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,Segoe_UI,sans-serif]">
+            <div className="note-body max-w-none whitespace-pre-wrap text-sm leading-relaxed">
               {document.content || "无内容"}
             </div>
           )}
