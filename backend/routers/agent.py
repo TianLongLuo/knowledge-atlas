@@ -553,6 +553,113 @@ async def ask_question(
 
 # ── Corpus-driven insight extraction ──────────────────────────────
 
+
+async def build_identity_profile(
+    client: AsyncOpenAI,
+    db: AsyncSession,
+) -> dict:
+    """Analyze the full note corpus to build a comprehensive user identity profile.
+
+    Extracts facets: who the user is, values, goals, projects, beliefs, tensions,
+    recurring themes, and knowledge domains. Stores results as confirmed L3 insights.
+    Runs idempotently — existing identical insights are skipped.
+    """
+    from models import Document
+
+    result = await db.execute(
+        select(Document.normalized_content, Document.title, Document.id)
+        .where(Document.normalized_content.isnot(None))
+        .order_by(Document.updated_at.desc())
+        .limit(50)
+    )
+    docs = result.all()
+    if not docs:
+        return {"status": "skipped", "reason": "No documents to analyze"}
+
+    # Collect content summaries (truncated)
+    corpus_snippets = []
+    for content, title, doc_id in docs:
+        if content:
+            corpus_snippets.append(f"--- {title} ---\n{content[:800]}")
+    corpus_text = "\n\n".join(corpus_snippets)
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are analyzing a user's personal note corpus to build their "
+                        "identity profile. Extract durable, evidence-backed insights across "
+                        "these facets: identity (who they are), core_values, goals, "
+                        "active_projects, beliefs, tensions_or_changes, recurring_themes, "
+                        "knowledge_domains. Return JSON with key 'insights' as an array of "
+                        "objects: {facet, statement, confidence (0.0-1.0)}. Only include "
+                        "statements clearly supported by the notes. Use confidence 0 when "
+                        "the corpus lacks evidence for a facet. Never fabricate. "
+                        "Output must be valid JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Analyze this note corpus and extract identity insights:\n\n{corpus_text[:12000]}",
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=1500,
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        new_insights = 0
+        for item in payload.get("insights", []):
+            statement = str(item.get("statement", "")).strip()
+            confidence = max(0.0, min(1.0, float(item.get("confidence", 0))))
+            if not statement or confidence < 0.5:
+                continue
+            # Check duplicate
+            existing = await db.scalar(
+                select(AgentMemory.id).where(
+                    AgentMemory.level == "L3",
+                    AgentMemory.content == statement,
+                ).limit(1)
+            )
+            if existing:
+                continue
+            await save_memory(db, "corpus_analysis", "L3", "insight", statement[:2000], {
+                "insight_type": str(item.get("facet", "pattern")),
+                "confidence": confidence,
+                "status": "confirmed",
+                "source": "corpus_analysis",
+                "created_at": str(uuid.uuid4()),
+            })
+            new_insights += 1
+        await db.commit()
+        return {"status": "completed", "new_insights": new_insights}
+    except Exception:
+        logger.exception("Corpus identity profile extraction failed")
+        return {"status": "error"}
+
+
+@router.post("/memory/build-profile", response_model=dict)
+async def build_identity_profile_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    """Trigger a full identity profile build from the note corpus."""
+    if not settings.deepseek_api_key:
+        return {"status": "skipped", "reason": "DeepSeek not configured"}
+
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        timeout=settings.deepseek_timeout_seconds,
+        max_retries=2,
+    )
+    result = await build_identity_profile(client, db)
+    return result
+
+
 @router.post("/memory/extract-from-corpus", response_model=dict)
 async def extract_insights_from_corpus_endpoint(
     db: AsyncSession = Depends(get_db),

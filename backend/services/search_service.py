@@ -78,12 +78,12 @@ class SearchService:
                 results.extend(kw)
             # ChromaDB text search (fallback for existing collection)
             ct = self._chromadb_text_search(query, source_type, top_k)
-            # Merge, deduplicate by title
-            seen = {r.title for r in results}
+            # Merge, deduplicate by (document_id, chunk_id)
+            seen = {(r.document_id, r.chunk_id) for r in results}
             for r in ct:
-                if r.title not in seen:
+                if (r.document_id, r.chunk_id) not in seen:
                     results.append(r)
-                    seen.add(r.title)
+                    seen.add((r.document_id, r.chunk_id))
 
         if search_type in ("hybrid", "vector"):
             vr = await self._vector_search(query, source_type, date_from, date_to, document_id, top_k, db)

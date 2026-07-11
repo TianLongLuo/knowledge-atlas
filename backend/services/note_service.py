@@ -197,9 +197,13 @@ class NoteService:
             doc.updated_at = datetime.now(timezone.utc)
             await session.flush()
 
-            # Notion write-back
+            # Notion write-back for all documents
             notion_sync_state = None
-            if doc.source_type == "notion" and doc.source_id:
+            if doc.source_id:
+                # Already linked to Notion — update the existing page
+                notion_sync_state = await self._enqueue_notion_write(session, doc)
+            else:
+                # New to Notion — create a page and link it
                 notion_sync_state = await self._enqueue_notion_write(session, doc)
 
             # Invalidate caches
@@ -312,18 +316,66 @@ class NoteService:
                 token_count=chunk.token_count,
             ))
 
-    async def _enqueue_notion_write(
+    async def _push_to_notion(
         self, db: AsyncSession, doc: Document
     ) -> dict[str, Any] | None:
-        """Record a pending Notion write-back attempt.
+        """Push document to Notion: create or update a page in the configured database.
 
-        Returns sync state dict or None if Notion is not configured.
+        After first successful push, the document's source_type becomes 'notion'
+        and source_id is set, so future edits update the same Notion page.
         """
         if not settings.notion_api_key or not settings.notion_database_id:
             return None
 
         try:
-            # Check if a sync state already exists for this document
+            from notion_client import AsyncClient
+
+            notion = AsyncClient(auth=settings.notion_api_key)
+            content = doc.normalized_content or doc.raw_content or ""
+            # Truncate for Notion's 2000-char text block limit; split into chunks
+            text_blocks = self._content_to_notion_blocks(content)
+
+            if doc.source_type == "notion" and doc.source_id:
+                # Update existing Notion page
+                try:
+                    await notion.blocks.children.append(
+                        block_id=doc.source_id,
+                        children=text_blocks[:100],
+                    )
+                    # Also update the page title
+                    await notion.pages.update(
+                        page_id=doc.source_id,
+                        properties={
+                            "Name": {"title": [{"text": {"content": doc.title[:2000]}}]},
+                        },
+                    )
+                except Exception as update_err:
+                    logger.warning(
+                        "Notion page update failed for %s, attempting recreate: %s",
+                        doc.source_id, update_err,
+                    )
+                    # Fall through to create new page
+                    doc.source_id = None
+
+            if not doc.source_id:
+                # Create new Notion page
+                new_page = await notion.pages.create(
+                    parent={"database_id": settings.notion_database_id},
+                    properties={
+                        "Name": {"title": [{"text": {"content": doc.title[:2000]}}]},
+                    },
+                    children=text_blocks[:100],
+                )
+                doc.source_type = "notion"
+                doc.source_id = new_page["id"]
+                if doc.metadata_ is None:
+                    doc.metadata_ = {}
+                doc.metadata_["notion_url"] = new_page.get("url", "")
+                logger.info(
+                    "Created Notion page %s for document %s", new_page["id"], doc.id
+                )
+
+            # Record sync state
             result = await db.execute(
                 select(SyncState).where(
                     SyncState.source_type == "notion_writeback",
@@ -337,13 +389,44 @@ class NoteService:
                     source_id=str(doc.id),
                 )
                 db.add(state)
-            state.status = "pending"
+            state.status = "completed"
             state.last_synced_at = datetime.now(timezone.utc)
             await db.flush()
-            return {"sync_state_id": state.id, "status": "pending"}
+            return {"status": "completed", "notion_page_id": doc.source_id}
         except Exception:
-            logger.exception("Failed to enqueue Notion write-back for doc %s", doc.id)
+            logger.exception("Failed to push doc %s to Notion", doc.id)
             return {"status": "error"}
+
+    @staticmethod
+    def _content_to_notion_blocks(content: str) -> list[dict]:
+        """Convert plain text to Notion paragraph blocks, splitting long text."""
+        if not content.strip():
+            return [{
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": ""}}]},
+            }]
+        blocks = []
+        # Split content into ~2000 char chunks (Notion text limit)
+        for i in range(0, len(content), 1900):
+            chunk = content[i:i + 1900]
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": chunk}}],
+                },
+            })
+        return blocks
+
+    async def _enqueue_notion_write(
+        self, db: AsyncSession, doc: Document
+    ) -> dict[str, Any] | None:
+        """Push document to Notion and record sync state.
+
+        Returns sync state dict or None if Notion is not configured.
+        """
+        return await self._push_to_notion(db, doc)
 
     async def _archive_notion_page(self, doc: Document) -> str | None:
         """Best-effort Notion page archival. Returns 'archived', 'error', or None."""

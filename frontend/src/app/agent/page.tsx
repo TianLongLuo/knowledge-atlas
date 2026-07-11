@@ -132,11 +132,10 @@ export default function AgentPage() {
 
   return (
     <div className="max-w-3xl mx-auto min-h-[calc(100vh-4rem)] flex flex-col">
-      {/* Minimal header — compact mode selector near composer area */}
+      {/* Minimal header */}
       <div className="flex items-center justify-between pb-3">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold tracking-tight">Atlas</h1>
-          {/* Connection status icon */}
           {connectionError ? (
             <span title="Connection problem"><WifiOff className="h-3.5 w-3.5 text-red-400" /></span>
           ) : (
@@ -149,20 +148,6 @@ export default function AgentPage() {
             </Badge>
           )}
         </div>
-        {/* Memory button */}
-        <button
-          onClick={() => setInsightOpen(true)}
-          className="relative flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent transition-colors"
-          title="Memory insights"
-        >
-          <Brain className="h-3.5 w-3.5" />
-          Memory
-          {pendingCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white">
-              {pendingCount}
-            </span>
-          )}
-        </button>
       </div>
 
       {/* Conversation surface — centered, full-height */}

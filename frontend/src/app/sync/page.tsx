@@ -5,7 +5,7 @@ import { getSyncStatus, getSyncHistory, startSync, SyncStatus, SyncHistoryItem }
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, CheckCircle, AlertCircle, Clock } from "lucide-react";
+import { RefreshCw, CheckCircle, AlertCircle, Clock, Zap } from "lucide-react";
 
 export default function SyncPage() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
@@ -64,7 +64,7 @@ export default function SyncPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Sync</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Notion synchronization runs automatically. Manual retry is available for recovery.
+          Notion syncs automatically every 5 minutes via SSE real-time updates. Manual sync is available for immediate recovery.
         </p>
       </div>
 
@@ -74,15 +74,20 @@ export default function SyncPage() {
             {statusIcon}
             Live status
           </CardTitle>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={handleManualSync}
-            disabled={syncing}
-          >
-            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Syncing…" : "Sync now"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-[10px] gap-1">
+              <Zap className="h-3 w-3" />Auto
+            </Badge>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleManualSync}
+              disabled={syncing}
+            >
+              <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Syncing…" : "Sync now"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <div className="flex justify-between">

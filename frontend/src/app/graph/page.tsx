@@ -207,17 +207,19 @@ export default function GraphPage() {
 
   // Directional particle offset for animated links
   const particleOffset = useRef(0);
+  const baseParticleRef = useRef(0);
 
   useEffect(() => {
-    if (prefersReducedMotion.current || !focusedId) return;
+    if (prefersReducedMotion.current) return;
     let frame: number;
     const animate = () => {
       particleOffset.current = (particleOffset.current + 0.008) % 1;
+      baseParticleRef.current = (baseParticleRef.current + 0.003) % 1;
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
-  }, [focusedId]);
+  }, []);
 
   return (
     <div className="flex h-[calc(100vh-3rem)] min-h-[680px] flex-col gap-3">
@@ -259,25 +261,28 @@ export default function GraphPage() {
               nodeLabel={(node) => `${node.label}<br/>${node.node_type} · ${node.degree} links`}
               nodeColor={(node) => typeColor(node.node_type)}
               linkColor={(edge) => {
-                if (!focusedId) return "rgba(148,163,184,0.14)";
+                if (!focusedId) return "rgba(148,163,184,0.08)";
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? "rgba(96,165,250,0.7)" : "rgba(71,85,105,0.04)";
+                return isFocused ? "rgba(96,165,250,0.65)" : "rgba(71,85,105,0.03)";
               }}
               linkWidth={(edge) => {
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? 0.8 + edge.weight * 1.5 : 0.3;
+                return isFocused ? 1.0 + edge.weight * 1.8 : 0.25;
               }}
               linkDirectionalParticles={(edge) => {
-                if (prefersReducedMotion.current || !focusedId) return 0;
+                if (prefersReducedMotion.current) return 0;
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? 2 : 0;
+                return isFocused ? 3 : 1;
               }}
               linkDirectionalParticleSpeed={0.004}
               linkDirectionalParticleWidth={(edge) => {
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? 1.5 : 0;
+                return isFocused ? 2 : 0.8;
               }}
-              linkDirectionalParticleColor={() => "rgba(147,197,253,0.9)"}
+              linkDirectionalParticleColor={(edge) => {
+                const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
+                return isFocused ? "rgba(147,197,253,0.85)" : "rgba(148,163,184,0.3)";
+              }}
               nodeCanvasObjectMode={() => "after"}
               nodeCanvasObject={(node, context, scale) => {
                 const active = node.id === focusedId;

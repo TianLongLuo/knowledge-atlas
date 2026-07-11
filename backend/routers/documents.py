@@ -58,14 +58,15 @@ def _get_legacy_chroma_docs(canonical_ids: set[int] = None) -> list[dict]:
     """Get ChromaDB records that are NOT already represented in PostgreSQL.
 
     Skips Chroma chunks whose document_id metadata matches a known
-    PostgreSQL canonical document.
+    PostgreSQL canonical document. Limited to 500 records for performance.
     """
     if canonical_ids is None:
         canonical_ids = set()
     try:
         collection = get_chroma_collection()
-        result = collection.get(include=["documents", "metadatas"])
+        result = collection.get(include=["documents", "metadatas"], limit=500)
         items = []
+        seen_pseudo_ids = set()
         if result["ids"]:
             for i, cid in enumerate(result["ids"]):
                 meta = (result["metadatas"][i] or {}) if result["metadatas"] else {}
@@ -78,8 +79,14 @@ def _get_legacy_chroma_docs(canonical_ids: set[int] = None) -> list[dict]:
                     if doc_id > 0 and doc_id in canonical_ids:
                         continue
 
+                pid = _pseudo_id(cid)
+                # Skip pseudo-ID collisions (same hash for different chroma IDs)
+                if pid in seen_pseudo_ids:
+                    continue
+                seen_pseudo_ids.add(pid)
+
                 items.append({
-                    "id": _pseudo_id(cid),
+                    "id": pid,
                     "chroma_real_id": cid,
                     "source_type": meta.get("source", "chromadb"),
                     "source_id": cid,

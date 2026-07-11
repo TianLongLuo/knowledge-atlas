@@ -30,6 +30,34 @@ logging.basicConfig(
 logger = logging.getLogger("knowledge-atlas")
 
 
+async def _run_corpus_analysis() -> None:
+    """Run identity profile extraction after sync, best-effort."""
+    try:
+        from openai import AsyncOpenAI
+
+        from database import async_session_factory
+
+        if not settings.deepseek_api_key:
+            return
+        async with async_session_factory() as session:
+            from routers.agent import build_identity_profile
+
+            client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url,
+                timeout=min(settings.deepseek_timeout_seconds, 30),
+                max_retries=1,
+            )
+            result = await build_identity_profile(client, session)
+            if result.get("new_insights", 0) > 0:
+                logger.info(
+                    "Corpus analysis: %d new identity insights extracted",
+                    result["new_insights"],
+                )
+    except Exception:
+        logger.exception("Corpus analysis failed (non-fatal)")
+
+
 async def _run_automatic_notion_sync() -> None:
     """Run Notion sync on a safe interval without requiring a UI click. Broadcasts SSE events."""
     from sqlalchemy import select
@@ -74,6 +102,8 @@ async def _run_automatic_notion_sync() -> None:
                             "source_type": "notion",
                             "sync_state_id": state.id,
                         })
+                        # After sync, refresh the identity profile
+                        await _run_corpus_analysis()
                     except Exception as sync_exc:
                         broadcast_sync_event("sync_failure", {
                             "source_type": "notion",
