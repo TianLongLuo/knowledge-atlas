@@ -1,285 +1,141 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import {
-  getSyncStatus,
-  getSyncHistory,
-  startSync,
-  SyncStatus,
-  SyncHistoryItem,
-} from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { getSyncStatus, getSyncHistory, startSync, SyncStatus, SyncHistoryItem } from "@/lib/api";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import {
-  RefreshCw,
-  CheckCircle,
-  XCircle,
-  AlertCircle,
-  Loader2,
-  Play,
-  History,
-} from "lucide-react";
+import { RefreshCw, CheckCircle, AlertCircle, Clock } from "lucide-react";
 
 export default function SyncPage() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [history, setHistory] = useState<SyncHistoryItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const [statusData, historyData] = await Promise.all([
-        getSyncStatus(),
-        getSyncHistory(),
-      ]);
-      setStatus(statusData);
-      setHistory(historyData);
-    } catch (err) {
-      console.error("Failed to load sync data:", err);
-    } finally {
-      setLoading(false);
+      const [s, h] = await Promise.all([getSyncStatus(), getSyncHistory()]);
+      setStatus(s);
+      setHistory(h);
+    } catch {
+      // Silently fail — status will update on next SSE event
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-    // Poll status every 10 seconds if sync is in progress
-    const interval = setInterval(() => {
-      getSyncStatus().then((s) => setStatus(s)).catch(() => {});
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [loadData]);
+    void refresh();
 
-  const handleStartSync = async () => {
-    setSyncLoading(true);
-    setMessage("");
+    // Listen for SSE sync events
+    const onSyncStart = () => { setSyncing(true); void refresh(); };
+    const onSyncComplete = () => { setSyncing(false); void refresh(); };
+    const onSyncFailure = () => { setSyncing(false); void refresh(); };
+
+    window.addEventListener("atlas:sync-start", onSyncStart);
+    window.addEventListener("atlas:sync-complete", onSyncComplete);
+    window.addEventListener("atlas:sync-failure", onSyncFailure);
+
+    const interval = setInterval(refresh, 30000);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("atlas:sync-start", onSyncStart);
+      window.removeEventListener("atlas:sync-complete", onSyncComplete);
+      window.removeEventListener("atlas:sync-failure", onSyncFailure);
+    };
+  }, [refresh]);
+
+  const handleManualSync = async () => {
+    setSyncing(true);
     try {
-      const result = await startSync();
-      setMessage(result.message || "Sync started");
-      // Refresh status
-      const newStatus = await getSyncStatus();
-      setStatus(newStatus);
-      const newHistory = await getSyncHistory();
-      setHistory(newHistory);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to start sync";
-      setMessage(msg);
-    } finally {
-      setSyncLoading(false);
+      await startSync();
+      await refresh();
+    } catch {
+      setSyncing(false);
     }
   };
 
-  const statusBadge = (s: string) => {
-    switch (s) {
-      case "idle":
-        return (
-          <Badge variant="secondary">
-            <CheckCircle className="h-3 w-3 mr-1" />
-            Idle
-          </Badge>
-        );
-      case "syncing":
-        return (
-          <Badge>
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            Syncing
-          </Badge>
-        );
-      case "error":
-        return (
-          <Badge variant="destructive">
-            <XCircle className="h-3 w-3 mr-1" />
-            Error
-          </Badge>
-        );
-      default:
-        return <Badge variant="outline">{s}</Badge>;
-    }
-  };
-
-  const syncHistoryStatusBadge = (s: string) => {
-    switch (s) {
-      case "completed":
-        return (
-          <Badge variant="secondary" className="text-xs">
-            <CheckCircle className="h-3 w-3 mr-1" />
-            Completed
-          </Badge>
-        );
-      case "failed":
-        return (
-          <Badge variant="destructive" className="text-xs">
-            <XCircle className="h-3 w-3 mr-1" />
-            Failed
-          </Badge>
-        );
-      case "in_progress":
-        return (
-          <Badge className="text-xs">
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            In progress
-          </Badge>
-        );
-      default:
-        return <Badge variant="outline" className="text-xs">{s}</Badge>;
-    }
-  };
+  const statusIcon = status?.status === "syncing" || syncing
+    ? <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+    : status?.status === "error"
+    ? <AlertCircle className="h-4 w-4 text-red-500" />
+    : <CheckCircle className="h-4 w-4 text-emerald-500" />;
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Data Sync</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage and monitor knowledge-base synchronization.
+        <h1 className="text-2xl font-bold tracking-tight">Sync</h1>
+        <p className="text-muted-foreground mt-1 text-sm">
+          Notion synchronization runs automatically. Manual retry is available for recovery.
         </p>
       </div>
 
-      {/* Sync status & action */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <RefreshCw className="h-5 w-5" />
-              Sync status
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="space-y-3">
-                <Skeleton className="h-8 w-32" />
-                <Skeleton className="h-4 w-48" />
-                <Skeleton className="h-4 w-40" />
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Current status</p>
-                  <div className="mt-1">{statusBadge(status?.status || "idle")}</div>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Last sync</p>
-                  <p className="text-sm font-medium mt-1">
-                    {status?.last_sync_time
-                      ? new Date(status.last_sync_time).toLocaleString("en-US")
-                      : "Never"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Synced documents</p>
-                  <p className="text-sm font-medium mt-1">
-                    {status?.total_synced ?? 0}
-                  </p>
-                </div>
-                {status?.errors !== undefined && status.errors > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground">Errors</p>
-                    <p className="text-sm font-medium mt-1 text-destructive">
-                      {status.errors}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Sync action</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Button
-              className="w-full"
-              onClick={handleStartSync}
-              disabled={syncLoading || status?.sync_in_progress}
-            >
-              {syncLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Starting...
-                </>
-              ) : (
-                <>
-                  <Play className="mr-2 h-4 w-4" />
-                  Start sync
-                </>
-              )}
-            </Button>
-
-            {status?.sync_in_progress && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Sync in progress...
-              </div>
-            )}
-
-            {message && (
-              <div className="text-sm p-2 rounded bg-accent/50">{message}</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Sync history */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <History className="h-5 w-5" />
+        <CardHeader className="pb-3 flex flex-row items-center justify-between">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            {statusIcon}
+            Live status
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleManualSync}
+            disabled={syncing}
+          >
+            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing…" : "Sync now"}
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Status</span>
+            <Badge variant={status?.status === "error" ? "destructive" : status?.status === "syncing" || syncing ? "default" : "secondary"}>
+              {syncing ? "Syncing" : status?.status === "error" ? "Error" : status?.status === "syncing" ? "Syncing" : "Idle"}
+            </Badge>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Last sync</span>
+            <span>{status?.last_sync_time ? new Date(status.last_sync_time).toLocaleString("en-US") : "Never"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Total synced</span>
+            <span>{status?.total_synced ?? 0}</span>
+          </div>
+          {status?.errors ? (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Errors</span>
+              <span className="text-red-500">{status.errors}</span>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Clock className="h-4 w-4" />
             Sync history
           </CardTitle>
-          <CardDescription>Recent sync records</CardDescription>
         </CardHeader>
         <CardContent>
-          {loading ? (
-            <div className="space-y-3">
-              {[...Array(5)].map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full" />
+          {history.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No sync history yet</p>
+          ) : (
+            <div className="space-y-2">
+              {history.slice(0, 10).map((item) => (
+                <div key={item.id} className="flex items-center justify-between rounded-lg border p-2.5 text-sm">
+                  <div className="flex items-center gap-2">
+                    {item.status === "completed" ? <CheckCircle className="h-3.5 w-3.5 text-emerald-500" /> :
+                     item.status === "failed" ? <AlertCircle className="h-3.5 w-3.5 text-red-500" /> :
+                     <RefreshCw className="h-3.5 w-3.5 text-blue-500 animate-spin" />}
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(item.started_at).toLocaleString("en-US")}
+                    </span>
+                  </div>
+                  <Badge variant={item.status === "completed" ? "secondary" : item.status === "failed" ? "destructive" : "outline"}>
+                    {item.status}
+                  </Badge>
+                </div>
               ))}
             </div>
-          ) : history.length === 0 ? (
-            <p className="text-muted-foreground text-sm text-center py-4">
-              No sync records yet
-            </p>
-          ) : (
-            <ScrollArea className="h-[400px]">
-              <div className="space-y-2">
-                {history.map((item, idx) => (
-                  <div key={item.id || idx}>
-                    {idx > 0 && <Separator className="my-2" />}
-                    <div className="flex items-center justify-between p-2">
-                      <div className="flex items-center gap-3">
-                        {syncHistoryStatusBadge(item.status)}
-                        <div>
-                          <p className="text-sm">
-                            Processed{" "}
-                            <span className="font-medium">
-                              {item.documents_processed}
-                            </span>{" "}
-                            documents
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {new Date(item.started_at).toLocaleString("en-US")}
-                            {item.completed_at &&
-                              ` · completed at ${new Date(item.completed_at).toLocaleString("en-US")}`}
-                          </p>
-                        </div>
-                      </div>
-                      {item.errors > 0 && (
-                        <div className="flex items-center gap-1 text-destructive text-sm">
-                          <AlertCircle className="h-4 w-4" />
-                          {item.errors} errors
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
           )}
         </CardContent>
       </Card>

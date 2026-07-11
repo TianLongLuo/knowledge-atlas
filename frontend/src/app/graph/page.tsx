@@ -82,6 +82,11 @@ export default function GraphPage() {
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerDocument, setReaderDocument] = useState<DocumentDetail | null>(null);
   const [readerError, setReaderError] = useState("");
+  const prefersReducedMotion = useRef(false);
+
+  useEffect(() => {
+    prefersReducedMotion.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, []);
 
   const fetchGraph = useCallback(async (threshold: number) => {
     setLoading(true);
@@ -200,6 +205,20 @@ export default function GraphPage() {
     setter((current) => { const next = new Set(current); if (next.has(value)) next.delete(value); else next.add(value); return next; });
   };
 
+  // Directional particle offset for animated links
+  const particleOffset = useRef(0);
+
+  useEffect(() => {
+    if (prefersReducedMotion.current || !focusedId) return;
+    let frame: number;
+    const animate = () => {
+      particleOffset.current = (particleOffset.current + 0.008) % 1;
+      frame = requestAnimationFrame(animate);
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [focusedId]);
+
   return (
     <div className="flex h-[calc(100vh-3rem)] min-h-[680px] flex-col gap-3">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -240,26 +259,62 @@ export default function GraphPage() {
               nodeLabel={(node) => `${node.label}<br/>${node.node_type} · ${node.degree} links`}
               nodeColor={(node) => typeColor(node.node_type)}
               linkColor={(edge) => {
-                if (!focusedId) return "rgba(148,163,184,0.22)";
-                return endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId ? "rgba(96,165,250,0.9)" : "rgba(71,85,105,0.06)";
+                if (!focusedId) return "rgba(148,163,184,0.14)";
+                const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
+                return isFocused ? "rgba(96,165,250,0.7)" : "rgba(71,85,105,0.04)";
               }}
-              linkWidth={(edge) => endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId ? 1.2 + edge.weight * 2 : 0.45}
-              linkVisibility={(edge) => !focusedId || endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId}
+              linkWidth={(edge) => {
+                const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
+                return isFocused ? 0.8 + edge.weight * 1.5 : 0.3;
+              }}
+              linkDirectionalParticles={(edge) => {
+                if (prefersReducedMotion.current || !focusedId) return 0;
+                const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
+                return isFocused ? 2 : 0;
+              }}
+              linkDirectionalParticleSpeed={0.004}
+              linkDirectionalParticleWidth={(edge) => {
+                const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
+                return isFocused ? 1.5 : 0;
+              }}
+              linkDirectionalParticleColor={() => "rgba(147,197,253,0.9)"}
               nodeCanvasObjectMode={() => "after"}
               nodeCanvasObject={(node, context, scale) => {
                 const active = node.id === focusedId;
                 const neighbor = focusedId ? connectedIds.has(node.id) : false;
+
+                // Dim unrelated nodes during focus
                 if (focusedId && !active && !neighbor) {
                   context.beginPath(); context.arc(node.x || 0, node.y || 0, 5, 0, Math.PI * 2);
-                  context.fillStyle = "rgba(13,17,23,0.68)"; context.fill();
+                  context.fillStyle = "rgba(13,17,23,0.72)"; context.fill();
                 }
+
+                // Glow halo for focused node
+                if (active && !prefersReducedMotion.current) {
+                  context.save();
+                  context.beginPath();
+                  context.arc(node.x || 0, node.y || 0, 14, 0, Math.PI * 2);
+                  const gradient = context.createRadialGradient(
+                    node.x || 0, node.y || 0, 8,
+                    node.x || 0, node.y || 0, 18
+                  );
+                  gradient.addColorStop(0, "rgba(248,250,252,0.25)");
+                  gradient.addColorStop(1, "rgba(248,250,252,0)");
+                  context.fillStyle = gradient;
+                  context.fill();
+                  context.restore();
+                }
+
+                // Selected node halo ring
                 if (active) {
                   context.beginPath(); context.arc(node.x || 0, node.y || 0, 10, 0, Math.PI * 2);
-                  context.strokeStyle = "#f8fafc"; context.lineWidth = 1.8 / scale; context.stroke();
+                  context.strokeStyle = "#f8fafc"; context.lineWidth = 1.6 / scale; context.stroke();
                 }
+
+                // Label rendering
                 if (active || node.id === hoveredId || scale > 2.2) {
                   const fontSize = 12 / scale;
-                  context.font = `${active ? 600 : 500} ${fontSize}px Inter, sans-serif`;
+                  context.font = `${active ? 600 : 500} ${fontSize}px Inter, system-ui, sans-serif`;
                   context.textAlign = "center"; context.textBaseline = "top";
                   context.fillStyle = active ? "#ffffff" : "#cbd5e1";
                   context.fillText(truncate(node.label, 28), node.x || 0, (node.y || 0) + 11 / scale);
@@ -284,14 +339,15 @@ export default function GraphPage() {
           )}
         </div>
 
+        {/* Glass controls */}
         <div className="absolute left-3 top-3 z-10 flex gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setShowControls((value) => !value)}><Settings2 className="mr-1 h-4 w-4" />Controls</Button>
-          <Button size="sm" variant="secondary" onClick={() => graphRef.current?.zoomToFit(500, 70)}><Maximize2 className="h-4 w-4" /></Button>
-          <Button size="sm" variant="secondary" onClick={() => { setSelectedId(null); setLocalDepth(0); graphRef.current?.d3ReheatSimulation(); }}><RotateCcw className="h-4 w-4" /></Button>
+          <Button size="sm" variant="secondary" className="backdrop-blur-md bg-slate-950/80 border-white/10" onClick={() => setShowControls((value) => !value)}><Settings2 className="mr-1 h-4 w-4" />Controls</Button>
+          <Button size="sm" variant="secondary" className="backdrop-blur-md bg-slate-950/80 border-white/10" onClick={() => graphRef.current?.zoomToFit(500, 70)}><Maximize2 className="h-4 w-4" /></Button>
+          <Button size="sm" variant="secondary" className="backdrop-blur-md bg-slate-950/80 border-white/10" onClick={() => { setSelectedId(null); setLocalDepth(0); graphRef.current?.d3ReheatSimulation(); }}><RotateCcw className="h-4 w-4" /></Button>
         </div>
 
         {showControls && (
-          <aside className="absolute bottom-3 left-3 top-14 z-10 w-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/90 p-3 text-slate-100 shadow-2xl backdrop-blur">
+          <aside className="absolute bottom-3 left-3 top-14 z-10 w-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/92 p-3 text-slate-100 shadow-2xl backdrop-blur-md">
             <div className="mb-4 flex items-center justify-between"><span className="text-sm font-semibold">Graph controls</span><button onClick={() => setShowControls(false)}><X className="h-4 w-4" /></button></div>
             <ControlSection title="Types" icon={<Filter className="h-3.5 w-3.5" />}>
               {typeEntries.map(([type, count]) => <FilterRow key={type} label={type} count={count} color={typeColor(type)} enabled={!hiddenTypes.has(type)} onClick={() => toggleSet(setHiddenTypes, type)} />)}
@@ -312,7 +368,7 @@ export default function GraphPage() {
         )}
 
         {focusedNode && (
-          <aside className="absolute bottom-3 right-3 top-3 z-10 w-80 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/92 p-4 text-slate-100 shadow-2xl backdrop-blur">
+          <aside className="absolute bottom-3 right-3 top-3 z-10 w-80 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/94 p-4 text-slate-100 shadow-2xl backdrop-blur-md">
             <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: typeColor(focusedNode.node_type) }} /><span className="text-xs uppercase tracking-wide text-slate-400">{focusedNode.node_type}</span></div>
             <h2 className="mt-2 text-lg font-semibold leading-snug">{focusedNode.label}</h2>
             <p className="mt-1 text-xs text-slate-400">{focusedNode.degree} links · {focusedNode.tags.join(", ") || "No tags"}</p>
@@ -324,7 +380,7 @@ export default function GraphPage() {
           </aside>
         )}
 
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-slate-950/75 px-3 py-1.5 text-[11px] text-slate-300 backdrop-blur">Scroll to zoom · Drag canvas to pan · Drag nodes to pin · Click for local context</div>
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300 backdrop-blur-md">Scroll to zoom · Drag canvas to pan · Drag nodes to pin · Click for local context</div>
       </div>
 
       <Dialog open={readerOpen} onOpenChange={setReaderOpen}>
