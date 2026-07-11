@@ -1,4 +1,4 @@
-"""Sync router — Notion sync trigger and status."""
+"""Sync router — Notion sync trigger and status with SSE events."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ async def start_notion_sync(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """Trigger a full sync from Notion.
+    """Trigger a full sync from Notion. Runs in the background.
 
-    Runs in the background — use GET /api/sync/status to check progress.
+    SSE events broadcast: sync-start, sync-complete, sync-failure.
     """
     if not settings.notion_api_key:
         raise HTTPException(
@@ -51,7 +51,7 @@ async def start_notion_sync(
             detail="A Notion sync is already in progress",
         )
 
-    # Reuse the source state; (source_type, source_id) is intentionally unique.
+    # Reuse the source state
     state_result = await db.execute(
         select(SyncState).where(
             SyncState.source_type == "notion",
@@ -67,6 +67,13 @@ async def start_notion_sync(
     await db.commit()
     await db.refresh(sync_state)
 
+    # Broadcast sync-start
+    from routers.notes import broadcast_sync_event
+    broadcast_sync_event("sync_start", {
+        "source_type": "notion",
+        "sync_state_id": sync_state.id,
+    })
+
     # Trigger background sync
     from services.notion_sync import NotionSyncService
 
@@ -81,13 +88,25 @@ async def start_notion_sync(
 
 
 async def _run_sync(sync_service, sync_state_id: int):
-    """Background task wrapper for the sync."""
-    try:
-        await sync_service.sync_all(sync_state_id)
-    except Exception as e:
-        import logging
+    """Background task wrapper for the sync with SSE broadcasts."""
+    import logging
+    logger = logging.getLogger(__name__)
+    from routers.notes import broadcast_sync_event
 
-        logging.getLogger(__name__).error(f"Notion sync failed: {e}")
+    try:
+        result = await sync_service.sync_all(sync_state_id)
+        broadcast_sync_event("sync_complete", {
+            "source_type": "notion",
+            "sync_state_id": sync_state_id,
+            "result": str(result),
+        })
+    except Exception as e:
+        logger.error(f"Notion sync failed: {e}")
+        broadcast_sync_event("sync_failure", {
+            "source_type": "notion",
+            "sync_state_id": sync_state_id,
+            "error": str(e),
+        })
 
 
 @router.get("/status", response_model=list[SyncStatusResponse])

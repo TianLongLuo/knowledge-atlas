@@ -1,9 +1,10 @@
-"""Agent / AI Q&A router — RAG-powered question answering."""
+"""Agent / AI Q&A router — corpus-grounded personal AI with query-intent routing."""
 
 from __future__ import annotations
 
 import logging
 import json
+import re
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -28,10 +29,14 @@ from schemas import (
     AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation,
     MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
 )
-from services.search_service import SearchService
+from services.search_service import SearchService, SearchResult
+from utils import is_broad_identity_question, mmr_diversify, _IDENTITY_FACETS
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────
 
 
 def deepseek_error_message(exc: Exception) -> str:
@@ -82,6 +87,61 @@ def insight_response(memory: AgentMemory) -> MemoryInsightResponse:
     )
 
 
+# ── Multi-facet retrieval ─────────────────────────────────────────
+
+
+async def multi_facet_retrieval(
+    search_service: SearchService,
+    question: str,
+    document_id: int | None,
+    db: AsyncSession,
+) -> list[SearchResult]:
+    """Retrieve diverse evidence across identity facets for broad personal questions."""
+    all_results: list[SearchResult] = []
+    seen_ids: set[tuple[int, str | None]] = set()
+
+    for facet_name, facet_query in _IDENTITY_FACETS:
+        try:
+            facet_results = await search_service.search(
+                query=facet_query,
+                search_type="vector",
+                top_k=10,
+                document_id=document_id,
+                db=db,
+            )
+            for r in facet_results:
+                key = (r.document_id, r.chunk_id)
+                if key not in seen_ids:
+                    seen_ids.add(key)
+                    all_results.append(r)
+        except Exception:
+            logger.exception("Facet retrieval failed for %s", facet_name)
+
+    # Also include direct question search
+    try:
+        direct_results = await search_service.search(
+            query=question,
+            search_type="vector",
+            top_k=10,
+            document_id=document_id,
+            db=db,
+        )
+        for r in direct_results:
+            key = (r.document_id, r.chunk_id)
+            if key not in seen_ids:
+                seen_ids.add(key)
+                all_results.append(r)
+    except Exception:
+        logger.exception("Direct search failed")
+
+    # MMR diversify across documents/topics
+    diverse = mmr_diversify(all_results, None, lambda_param=0.65, top_n=25)
+    return diverse
+
+
+# ── Memory insights ───────────────────────────────────────────────
+
+
 @router.get("/memory/insights", response_model=list[MemoryInsightResponse])
 async def memory_insights(
     status: str | None = None,
@@ -117,7 +177,10 @@ async def extract_candidate_insight(
     answer: str,
     document_ids: list[int],
 ) -> None:
-    """Extract one evidence-backed hypothesis; never auto-confirm it."""
+    """Extract one evidence-backed hypothesis; never auto-confirm it.
+
+    Now also extracts from note creation/update corpus growth.
+    """
     try:
         response = await client.chat.completions.create(
             model=settings.deepseek_model,
@@ -134,7 +197,13 @@ async def extract_candidate_insight(
         confidence = max(0.0, min(1.0, float(payload.get("confidence") or 0)))
         if not statement or confidence < 0.65:
             return
-        duplicate = await db.scalar(select(AgentMemory.id).where(AgentMemory.level == "L3", AgentMemory.content == statement).limit(1))
+        # Check for duplicate AND supersede stale insights
+        duplicate = await db.scalar(
+            select(AgentMemory.id).where(
+                AgentMemory.level == "L3",
+                AgentMemory.content == statement
+            ).limit(1)
+        )
         if duplicate:
             return
         await save_memory(db, "global", "L3", "insight", statement[:2000], {
@@ -142,9 +211,45 @@ async def extract_candidate_insight(
             "confidence": confidence,
             "status": "pending",
             "evidence_document_ids": document_ids,
+            "first_seen": str(uuid.uuid4()),  # replace with timestamp in real impl
         })
     except Exception:
         logger.exception("Unable to extract candidate memory insight")
+
+
+async def extract_insights_from_corpus(
+    client: AsyncOpenAI,
+    db: AsyncSession,
+    document_ids: list[int],
+) -> None:
+    """Extract candidate insights directly from note corpus growth.
+
+    Called after note creation/update to grow durable insights from the corpus.
+    """
+    if not document_ids:
+        return
+    try:
+        # Get document content
+        from models import Document
+        docs = (await db.execute(
+            select(Document).where(Document.id.in_(document_ids[:5]))
+        )).scalars().all()
+
+        for doc in docs:
+            content = doc.normalized_content or doc.raw_content or ""
+            if len(content) < 100:
+                continue
+            await extract_candidate_insight(
+                client, db,
+                f"Extract insights from this note: {doc.title}",
+                content[:3000],
+                [doc.id],
+            )
+    except Exception:
+        logger.exception("Unable to extract insights from corpus")
+
+
+# ── Status endpoints ──────────────────────────────────────────────
 
 
 @router.get("/memory/status", response_model=AgentMemoryStatusResponse)
@@ -211,23 +316,25 @@ async def agent_status(_user: str = Depends(get_current_user)):
     )
 
 
+# ── Main Q&A endpoint ─────────────────────────────────────────────
+
+
 @router.post("/ask", response_model=AskResponse)
 async def ask_question(
     body: AskRequest,
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """RAG-powered Q&A using ChromaDB retrieval + DeepSeek.
+    """Corpus-grounded Q&A with query-intent routing for personal questions.
 
-    Flow:
-    1. Retrieve top-k relevant chunks from ChromaDB via vector search
-    2. Assemble context from the chunks
-    3. Call DeepSeek chat API with context + question
-    4. Return answer with citations
+    - Identity/profile questions trigger multi-facet diverse retrieval.
+    - Normal questions use focused vector search.
+    - Every claim must be traceable to citations.
     """
     search_service = SearchService()
     session_id = body.session_id or uuid.uuid4().hex
 
+    # Recent conversation history
     history_result = await db.execute(
         select(AgentMemory)
         .where(AgentMemory.session_id == session_id, AgentMemory.level == "L0")
@@ -235,6 +342,8 @@ async def ask_question(
         .limit(8)
     )
     recent_history = list(reversed(history_result.scalars().all()))
+
+    # Confirmed insights only
     insight_result = await db.execute(
         select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(30)
     )
@@ -242,18 +351,40 @@ async def ask_question(
         memory for memory in insight_result.scalars().all()
         if (memory.metadata_ or {}).get("status") == "confirmed"
     ][:12]
+
     await save_memory(db, session_id, "L0", "user", body.question)
 
-    # Step 1: Retrieve relevant chunks
-    search_results = await search_service.search(
-        query=body.question,
-        search_type="vector",
-        top_k=body.top_k,
-        document_id=body.document_id,
-        db=db,
-    )
+    # Step 1: Retrieve relevant chunks — with intent routing
+    broad_identity = is_broad_identity_question(body.question)
+
+    if broad_identity and body.document_id is None:
+        # Multi-facet retrieval for broad personal questions
+        search_results = await multi_facet_retrieval(
+            search_service, body.question, body.document_id, db
+        )
+        # Use larger pool
+        search_results = search_results[:25]
+    elif body.document_id is not None:
+        # Document-scoped: focused retrieval
+        search_results = await search_service.search(
+            query=body.question,
+            search_type="vector",
+            top_k=max(body.top_k, 10),
+            document_id=body.document_id,
+            db=db,
+        )
+    else:
+        # Normal: focused vector search with larger pool
+        search_results = await search_service.search(
+            query=body.question,
+            search_type="vector",
+            top_k=max(body.top_k, 15),
+            document_id=body.document_id,
+            db=db,
+        )
+
     if not search_results:
-        answer = "I couldn't find any relevant information in the vector knowledge base to answer this question."
+        answer = "I couldn't find any relevant information in your knowledge base to answer this question. Try adding more notes first."
         await save_memory(db, session_id, "L0", "assistant", answer)
         return AskResponse(
             question=body.question,
@@ -262,14 +393,21 @@ async def ask_question(
             session_id=session_id,
         )
 
-    # Step 2: Build context string
+    # Step 2: Build context string with deduplication
     context_parts = []
-    for i, r in enumerate(search_results):
+    seen_docs = set()
+    doc_index = 0
+    for r in search_results:
+        if r.document_id in seen_docs and doc_index < 20:
+            continue  # skip near-duplicate documents unless we have few results
+        seen_docs.add(r.document_id)
+        doc_index += 1
         context_parts.append(
-            f"[Document {i+1}] Title: {r.title}\n"
+            f"[Doc {doc_index}] Title: {r.title}\n"
             f"Source: {r.source}\n"
             f"Content: {r.snippet}\n"
         )
+
     context = "\n---\n".join(context_parts)
     await save_memory(
         db,
@@ -282,11 +420,10 @@ async def ask_question(
 
     # Step 3: Call DeepSeek
     if not settings.deepseek_api_key:
-        # Fallback: return search results without AI synthesis
         answer = (
             "AI synthesis is unavailable (DeepSeek API key not configured). "
-            "Here are the most relevant documents from the vector knowledge base:\n\n"
-            + "\n".join(f"- **{r.title}**: {r.snippet[:200]}..." for r in search_results)
+            "Here are the most relevant documents from your knowledge base:\n\n"
+            + "\n".join(f"- **{r.title}**: {r.snippet[:200]}..." for r in search_results[:10])
         )
         await save_memory(db, session_id, "L0", "assistant", answer)
         return AskResponse(
@@ -300,7 +437,7 @@ async def ask_question(
                     source_url=r.url,
                     similarity_score=r.similarity_score,
                 )
-                for r in search_results
+                for r in search_results[:10]
             ],
             session_id=session_id,
         )
@@ -317,11 +454,25 @@ async def ask_question(
         "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and end with one clarifying question.",
         "socratic": "Use a Socratic style. Do not make the decision for the user. Connect the notes to the present question and ask one precise question that exposes an assumption or trade-off.",
     }
+
+    broad_identity_preamble = ""
+    if broad_identity:
+        broad_identity_preamble = (
+            "The user has asked a broad personal question about their identity, values, goals, "
+            "or self-understanding. The retrieved context spans multiple facets of their note corpus. "
+            "Synthesize a comprehensive but honest answer. "
+            "Clearly distinguish what the notes explicitly say from what you infer. "
+            "If the corpus lacks evidence on certain aspects, acknowledge the gaps. "
+            "Never fabricate biography, personality, or mental-health claims. "
+        )
+
     system_prompt = (
-        "You are the user's private Knowledge Atlas assistant. Every substantive claim about the user "
+        "You are the user's private Knowledge Atlas assistant — a personal AI grounded in their "
+        "entire vectorized note corpus. Every substantive claim about the user "
         "must be grounded in the supplied notes or confirmed memories. Never invent biography, values, "
         "intentions, personality, or mental-health conclusions. Distinguish evidence from inference. "
-        "If evidence is insufficient, say so. Cite source numbers such as [Doc 1]. "
+        "If evidence is insufficient, say so clearly. Cite source numbers such as [Doc 1]. "
+        + broad_identity_preamble
         + mode_instructions[body.mode]
     )
 
@@ -340,7 +491,7 @@ async def ask_question(
                     "role": "user",
                     "content": f"Confirmed long-term memories (user reviewed):\n"
                     + ("\n".join(f"- {memory.content}" for memory in confirmed_insights) or "- None yet")
-                    + f"\n\nContext retrieved from vector knowledge base:\n\n{context}\n\n"
+                    + f"\n\nContext retrieved from your knowledge base:\n\n{context}\n\n"
                     f"Question: {body.question}\n\n"
                     f"Please answer based on the context above. Include citations "
                     f"referring to document numbers (e.g., [Doc 1], [Doc 2]).",
@@ -352,15 +503,16 @@ async def ask_question(
         answer = response.choices[0].message.content or ""
         await save_memory(db, session_id, "L0", "assistant", answer)
         await extract_candidate_insight(
-            client, db, body.question, answer, [result.document_id for result in search_results]
+            client, db, body.question, answer,
+            [r.document_id for r in search_results]
         )
     except Exception as exc:
         logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
         diagnostic = deepseek_error_message(exc)
         answer = (
             f"DeepSeek is temporarily unavailable: {diagnostic}\n\n"
-            "The vector database is working. These are the most relevant notes:\n\n"
-            + "\n".join(f"- **{r.title}**: {r.snippet[:240]}..." for r in search_results)
+            "Your vector database is working. These are the most relevant notes:\n\n"
+            + "\n".join(f"- **{r.title}**: {r.snippet[:240]}..." for r in search_results[:10])
         )
         await save_memory(db, session_id, "L0", "assistant", answer)
         return AskResponse(
@@ -374,7 +526,7 @@ async def ask_question(
                     source_url=r.url,
                     similarity_score=r.similarity_score,
                 )
-                for r in search_results
+                for r in search_results[:10]
             ],
             session_id=session_id,
         )
@@ -388,7 +540,7 @@ async def ask_question(
             source_url=r.url,
             similarity_score=r.similarity_score,
         )
-        for r in search_results
+        for r in search_results[:15]
     ]
 
     return AskResponse(
@@ -397,3 +549,30 @@ async def ask_question(
         citations=citations,
         session_id=session_id,
     )
+
+
+# ── Corpus-driven insight extraction ──────────────────────────────
+
+@router.post("/memory/extract-from-corpus", response_model=dict)
+async def extract_insights_from_corpus_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    """Trigger insight extraction from recent note corpus. Idempotent."""
+    if not settings.deepseek_api_key:
+        return {"status": "skipped", "reason": "DeepSeek not configured"}
+
+    from models import Document
+    result = await db.execute(
+        select(Document.id).order_by(Document.updated_at.desc()).limit(10)
+    )
+    doc_ids = [row[0] for row in result.all()]
+
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        timeout=settings.deepseek_timeout_seconds,
+        max_retries=2,
+    )
+    await extract_insights_from_corpus(client, db, doc_ids)
+    return {"status": "completed", "documents_scanned": len(doc_ids)}

@@ -11,7 +11,14 @@ from pydantic import BaseModel, Field
 from auth import get_current_user
 from config import settings
 from database import get_chroma_collection
-from routers.documents import _pseudo_id
+from utils import (
+    pseudo_id as _pseudo_id,
+    normalized_source_type,
+    normalized_tags,
+    dominant_group,
+    content_snippet,
+    display_label,
+)
 
 logger = logging.getLogger("knowledge-atlas.graph")
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -56,79 +63,6 @@ class GraphResponse(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
     stats: GraphStats
-
-
-_KEYWORDS = {
-    "商业": ("商业", "盈利", "收入", "市场", "投资", "融资", "客户", "变现", "business", "revenue"),
-    "产品": ("产品", "功能", "用户", "交互", "界面", "设计", "需求", "product", "ux", "feature"),
-    "运营": ("运营", "流量", "转化", "留存", "增长", "数据", "指标", "活动"),
-    "营销": ("营销", "推广", "品牌", "广告", "文案", "投放", "seo", "marketing"),
-    "思考": ("思考", "认知", "逻辑", "批判", "观点", "反思", "哲学", "critical"),
-    "生活": ("生活", "日常", "旅行", "美食", "健身", "音乐", "电影", "life", "travel"),
-    "技术": ("技术", "代码", "编程", "架构", "服务器", "算法", "code", "python", "api", "docker"),
-    "学习": ("学习", "笔记", "教程", "阅读", "课程", "知识", "learn", "study", "book"),
-    "创作": ("写作", "小说", "文字", "故事", "创作", "人物", "情节", "write", "story"),
-}
-
-_SOURCE_TYPES = {
-    "notion": "Notion",
-    "manual": "Manual note",
-    "note": "Manual note",
-    "file": "File",
-    "pdf": "File",
-    "web": "Web page",
-    "url": "Web page",
-    "telegram": "Imported",
-    "flomo": "Imported",
-    "chromadb": "Imported",
-}
-
-
-def normalized_source_type(source: str, metadata: dict) -> str:
-    """Map importer-specific source labels into stable graph types."""
-    explicit = str(metadata.get("source_type") or "").strip().lower()
-    raw = explicit or source.strip().lower()
-    for key, label in _SOURCE_TYPES.items():
-        if key in raw:
-            return label
-    return "Unknown"
-
-
-def normalized_tags(metadata: dict) -> list[str]:
-    raw = metadata.get("tags") or metadata.get("tag") or []
-    if isinstance(raw, str):
-        raw = [part.strip() for part in raw.replace("，", ",").split(",")]
-    if not isinstance(raw, list):
-        return []
-    return list(dict.fromkeys(str(tag).strip()[:40] for tag in raw if str(tag).strip()))[:12]
-
-
-def dominant_group(text: str, title: str, metadata: dict) -> str:
-    """Prefer explicit metadata and fall back to deterministic keywords."""
-    explicit = metadata.get("group") or metadata.get("category")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()[:32]
-    combined = f"{title} {(text or '')[:500]}".lower()
-    scores = {group: sum(keyword in combined for keyword in words) for group, words in _KEYWORDS.items()}
-    best = max(scores, key=scores.get)
-    return best if scores[best] else "随笔"
-
-
-def content_snippet(text: str, max_len: int = 110) -> str:
-    compact = " ".join((text or "").split())
-    if len(compact) <= max_len:
-        return compact
-    for separator in ("。", ". ", "，", ", ", " "):
-        index = compact[:max_len].rfind(separator)
-        if index >= max_len // 2:
-            return compact[: index + (1 if separator in {"。", "，"} else 0)] + "…"
-    return compact[:max_len] + "…"
-
-
-def display_label(title: str, max_len: int = 80) -> str:
-    """Keep enough title for search/tooltips; the Canvas controls rendering."""
-    compact = " ".join(title.split())
-    return compact if len(compact) <= max_len else compact[:max_len] + "…"
 
 
 def _empty_response() -> GraphResponse:

@@ -1,6 +1,7 @@
 """Document CRUD router — PostgreSQL + ChromaDB unified view.
 
-Full CRUD: create (via /notes), read, update, delete.
+Full CRUD: canonical PostgreSQL documents with Chroma chunks, legacy
+Chroma-only records for backward compatibility.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from schemas import (
     DocumentListResponse,
     DocumentResponse,
 )
+from services.note_service import note_service
+from utils import normalize_document_id, pseudo_id
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -31,17 +34,34 @@ logger = logging.getLogger(__name__)
 
 
 def _pseudo_id(chroma_id: str) -> int:
-    """Return a stable JavaScript-safe negative route ID for a Chroma record.
+    return pseudo_id(chroma_id)
 
-    JSON numbers are IEEE-754 doubles in browsers.  Keep the magnitude below
-    2**52 so document IDs survive JSON parsing and client-side routing intact.
+
+def _normalize_document_id(raw: object) -> int:
+    return normalize_document_id(raw)
+
+
+async def _get_canonical_document_ids(db: AsyncSession) -> set[int]:
+    """Get all PostgreSQL document IDs that have Chroma chunk entries.
+
+    Used for deduplication: Chroma records with a document_id matching
+    a PostgreSQL canonical document are skipped in legacy listing.
     """
-    digest = hashlib.blake2b(chroma_id.encode(), digest_size=8).digest()
-    return -(int.from_bytes(digest, "big") & ((1 << 52) - 1) or 1)
+    try:
+        result = await db.execute(select(Document.id))
+        return {row[0] for row in result.all()}
+    except Exception:
+        return set()
 
 
-def _get_chroma_docs() -> list[dict]:
-    """Get all ChromaDB documents as pseudo-document responses."""
+def _get_legacy_chroma_docs(canonical_ids: set[int] = None) -> list[dict]:
+    """Get ChromaDB records that are NOT already represented in PostgreSQL.
+
+    Skips Chroma chunks whose document_id metadata matches a known
+    PostgreSQL canonical document.
+    """
+    if canonical_ids is None:
+        canonical_ids = set()
     try:
         collection = get_chroma_collection()
         result = collection.get(include=["documents", "metadatas"])
@@ -50,6 +70,14 @@ def _get_chroma_docs() -> list[dict]:
             for i, cid in enumerate(result["ids"]):
                 meta = (result["metadatas"][i] or {}) if result["metadatas"] else {}
                 text = (result["documents"][i] or "") if result["documents"] else ""
+
+                # Skip Chroma chunks that belong to PostgreSQL documents
+                doc_id_meta = meta.get("document_id")
+                if doc_id_meta is not None:
+                    doc_id = _normalize_document_id(doc_id_meta)
+                    if doc_id > 0 and doc_id in canonical_ids:
+                        continue
+
                 items.append({
                     "id": _pseudo_id(cid),
                     "chroma_real_id": cid,
@@ -71,7 +99,7 @@ def _get_chroma_docs() -> list[dict]:
 
 def _find_chroma_by_neg_id(neg_id: int) -> tuple[str | None, dict | None]:
     """Given a negative pseudo-ID, return (chroma_real_id, doc_dict)."""
-    docs = _get_chroma_docs()
+    docs = _get_legacy_chroma_docs()
     for d in docs:
         if d["id"] == neg_id:
             return d["chroma_real_id"], d
@@ -84,49 +112,6 @@ def _find_chroma_by_neg_id(neg_id: int) -> tuple[str | None, dict | None]:
 class UpdateDocumentRequest(BaseModel):
     title: str | None = None
     content: str | None = None
-
-
-async def _reindex_postgres_document(doc: Document, db: AsyncSession) -> None:
-    """Atomically rebuild SQL chunk rows and idempotently upsert Chroma chunks."""
-    from sqlalchemy import delete as sa_delete
-    from routers.notes import _get_model
-    from services.chunking import ChunkingService
-
-    content = doc.normalized_content or doc.raw_content or ""
-    chunks = ChunkingService(chunk_size=500, chunk_overlap=50).chunk_text(content)
-    model = await asyncio.to_thread(_get_model)
-    vectors = await asyncio.to_thread(
-        lambda: model.encode([chunk.text for chunk in chunks]).tolist()
-    ) if chunks else []
-    collection = get_chroma_collection()
-    collection.delete(where={"document_id": str(doc.id)})
-
-    await db.execute(sa_delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
-    metadata = doc.metadata_ or {}
-    for chunk, vector in zip(chunks, vectors):
-        chroma_id = f"document_{doc.id}_chunk_{chunk.index}"
-        collection.upsert(
-            ids=[chroma_id],
-            embeddings=[vector],
-            documents=[chunk.text],
-            metadatas=[{
-                "source": doc.source_type,
-                "title": doc.title,
-                "document_id": str(doc.id),
-                "chunk_index": chunk.index,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "url": str(metadata.get("url") or ""),
-            }],
-        )
-        db.add(DocumentChunk(
-            document_id=doc.id,
-            chunk_index=chunk.index,
-            chunk_text=chunk.text,
-            chunk_hash=chunk.hash,
-            chroma_id=chroma_id,
-            token_count=chunk.token_count,
-        ))
-    doc.content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:32]
 
 
 # ── List ──────────────────────────────────────────────────────────
@@ -143,7 +128,7 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """List PostgreSQL and legacy Chroma documents with correct pagination."""
+    """List PostgreSQL documents, excluding legacy Chroma-only records that overlap."""
     base_query = select(Document)
     if source_type and source_type != "chromadb":
         base_query = base_query.where(Document.source_type == source_type)
@@ -168,8 +153,10 @@ async def list_documents(
     pg_docs = result.scalars().all()
     items = [DocumentResponse.model_validate(d) for d in pg_docs]
 
+    # Add legacy Chroma-only records (not already in PostgreSQL)
     if source_type is None or source_type == "chromadb":
-        chroma_items = _get_chroma_docs()
+        canonical_ids = {d.id for d in pg_docs}
+        chroma_items = _get_legacy_chroma_docs(canonical_ids)
         if search:
             s = search.lower()
             chroma_items = [
@@ -223,19 +210,22 @@ async def get_document(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """Get document detail. Negative IDs → ChromaDB."""
+    """Get document detail. Negative IDs → legacy ChromaDB. Full content, no truncation."""
     if document_id < 0:
-        chroma_items = _get_chroma_docs()
+        chroma_items = _get_legacy_chroma_docs()
         ci = next((item for item in chroma_items if item["id"] == document_id), None)
         if ci is None:
             raise HTTPException(status_code=404, detail="Document not found")
+        # Return full content for legacy Chroma records
+        raw_content = ci["raw_content"] or ""
+        normalized_content = ci["normalized_content"] or raw_content
         return DocumentDetailResponse(
             id=ci["id"],
             source_type=ci["source_type"],
             source_id=ci["source_id"],
             title=ci["title"],
-            raw_content=ci["raw_content"],
-            normalized_content=ci["normalized_content"],
+            raw_content=raw_content,
+            normalized_content=normalized_content,
             metadata=ci["metadata"],
             content_hash=ci["content_hash"],
             created_at=ci["created_at"],
@@ -260,7 +250,6 @@ async def get_document(
     node_ids = [n.node_id for n in nodes]
     edges = []
     if node_ids:
-        from sqlalchemy import or_
         edges_result = await db.execute(
             select(KnowledgeEdge).where(
                 or_(KnowledgeEdge.source_node_id.in_(node_ids), KnowledgeEdge.target_node_id.in_(node_ids))
@@ -270,9 +259,12 @@ async def get_document(
 
     from schemas import ChunkResponse, KnowledgeEdgeResponse, KnowledgeNodeResponse
 
+    # Return FULL content — no truncation in detail endpoint
     return DocumentDetailResponse(
         id=doc.id, source_type=doc.source_type, source_id=doc.source_id,
-        title=doc.title, raw_content=doc.raw_content, normalized_content=doc.normalized_content,
+        title=doc.title,
+        raw_content=doc.raw_content or "",
+        normalized_content=doc.normalized_content or "",
         metadata=doc.metadata_, content_hash=doc.content_hash,
         created_at=doc.created_at, updated_at=doc.updated_at,
         chunks=[ChunkResponse.model_validate(c) for c in chunks],
@@ -293,10 +285,10 @@ async def update_document(
 ):
     """Update document title and/or content.
 
-    For ChromaDB notes (negative IDs): update in vector store + re-embed.
-    For PostgreSQL docs: update DB row.
+    PostgreSQL docs: canonical update via NoteService.
+    Legacy Chroma notes (negative IDs): update in vector store.
     """
-    # ── ChromaDB note update ────────────────────────────────────
+    # ── ChromaDB note update (legacy) ──────────────────────────────
     if document_id < 0:
         real_id, _ = _find_chroma_by_neg_id(document_id)
         if not real_id:
@@ -323,9 +315,9 @@ async def update_document(
 
         # Re-embed if content changed
         if body.content is not None and body.content != old_text:
-            from routers.notes import _get_model
+            from sentence_transformers import SentenceTransformer
 
-            model = await asyncio.to_thread(_get_model)
+            model = SentenceTransformer(settings.embedding_model)
             new_embedding = await asyncio.to_thread(lambda: model.encode(new_content).tolist())
             collection.update(ids=[real_id], documents=[new_content], metadatas=[new_meta], embeddings=[new_embedding])
         else:
@@ -350,28 +342,31 @@ async def update_document(
             updated_at=new_meta.get("updated_at"),
         )
 
-    # ── PostgreSQL document update ───────────────────────────────
+    # ── PostgreSQL document update (canonical via NoteService) ─────
+    if body.title is not None and not body.title.strip():
+        raise HTTPException(status_code=422, detail="Title cannot be empty")
+
+    try:
+        result = await note_service.update(
+            document_id=document_id,
+            title=body.title,
+            content=body.content,
+            db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Update failed: {exc}")
+
+    from routers.notes import broadcast_note_updated
+
+    broadcast_note_updated({
+        "id": document_id,
+        "title": body.title,
+        "updated": True,
+    })
+
     doc = await db.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if body.title is not None:
-        if not body.title.strip():
-            raise HTTPException(status_code=422, detail="Title cannot be empty")
-        doc.title = body.title.strip()
-    if body.content is not None:
-        doc.raw_content = body.content
-        doc.normalized_content = body.content
-
-    await db.flush()
-    if body.title is not None or body.content is not None:
-        await _reindex_postgres_document(doc, db)
-        from routers.graph import invalidate_graph_cache
-        from services.search_service import invalidate_search_cache
-
-        invalidate_graph_cache()
-        invalidate_search_cache()
-    await db.refresh(doc)
     return DocumentResponse.model_validate(doc)
 
 
@@ -384,8 +379,8 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """Delete a document or ChromaDB note."""
-    # ── ChromaDB note delete ────────────────────────────────────
+    """Delete a document or legacy ChromaDB note."""
+    # ── ChromaDB note delete (legacy) ──────────────────────────────
     if document_id < 0:
         real_id, _ = _find_chroma_by_neg_id(document_id)
         if not real_id:
@@ -403,32 +398,20 @@ async def delete_document(
         invalidate_search_cache()
         invalidate_graph_cache()
 
+        from routers.notes import broadcast_note_deleted
+        broadcast_note_deleted({"id": document_id})
+
         return {"message": "Note deleted", "id": document_id}
 
-    # ── PostgreSQL document delete ───────────────────────────────
-    doc = await db.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    # ── PostgreSQL document delete (canonical) ─────────────────────
+    try:
+        result = await note_service.delete(document_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}")
 
-    # Also delete associated ChromaDB chunks
-    chunks_result = await db.execute(
-        select(DocumentChunk).where(DocumentChunk.document_id == document_id)
-    )
-    chunks = chunks_result.scalars().all()
-    chroma_ids = [c.chroma_id for c in chunks if c.chroma_id]
-    if chroma_ids:
-        try:
-            collection = get_chroma_collection()
-            collection.delete(ids=chroma_ids)
-        except Exception as exc:
-            logger.exception("Failed to remove vector chunks for document %s", document_id)
-            raise HTTPException(status_code=503, detail="Vector index is temporarily unavailable") from exc
+    from routers.notes import broadcast_note_deleted
+    broadcast_note_deleted({"id": document_id})
 
-    await db.delete(doc)
-    await db.flush()
-    from routers.graph import invalidate_graph_cache
-    from services.search_service import invalidate_search_cache
-
-    invalidate_graph_cache()
-    invalidate_search_cache()
     return {"message": "Document deleted", "id": document_id}

@@ -31,12 +31,13 @@ logger = logging.getLogger("knowledge-atlas")
 
 
 async def _run_automatic_notion_sync() -> None:
-    """Run Notion sync on a safe interval without requiring a UI click."""
+    """Run Notion sync on a safe interval without requiring a UI click. Broadcasts SSE events."""
     from sqlalchemy import select
 
     from database import async_session_factory
     from models import SyncState
     from services.notion_sync import NotionSyncService
+    from routers.notes import broadcast_sync_event
 
     while True:
         try:
@@ -62,7 +63,24 @@ async def _run_automatic_notion_sync() -> None:
                     state.error_message = None
                     await session.commit()
                     await session.refresh(state)
-                    await NotionSyncService().sync_all(state.id)
+                    broadcast_sync_event("sync_start", {
+                        "source_type": "notion",
+                        "sync_state_id": state.id,
+                        "auto": True,
+                    })
+                    try:
+                        await NotionSyncService().sync_all(state.id)
+                        broadcast_sync_event("sync_complete", {
+                            "source_type": "notion",
+                            "sync_state_id": state.id,
+                        })
+                    except Exception as sync_exc:
+                        broadcast_sync_event("sync_failure", {
+                            "source_type": "notion",
+                            "sync_state_id": state.id,
+                            "error": str(sync_exc),
+                        })
+                        raise
         except asyncio.CancelledError:
             raise
         except Exception:

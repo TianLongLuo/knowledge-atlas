@@ -1,4 +1,4 @@
-"""Notes router — create and manage notes across ChromaDB."""
+"""Notes router — canonical create/update for notes via PostgreSQL+ChromaDB."""
 
 from __future__ import annotations
 
@@ -10,24 +10,17 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
 from config import settings
-from database import get_chroma_collection
+from database import get_chroma_collection, get_db
+from services.note_service import note_service
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
 
-# Event queue for SSE
+# Event queue for SSE — extended to cover more event types
 _event_queues: list[asyncio.Queue] = []
-_embedding_model = None
-
-
-def _get_model():
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(settings.embedding_model)
-    return _embedding_model
 
 
 class CreateNoteRequest(BaseModel):
@@ -38,14 +31,14 @@ class CreateNoteRequest(BaseModel):
 
 
 class NoteResponse(BaseModel):
-    id: str
+    id: int
     title: str
-    content: str
     source: str
     created_at: str
+    chunk_count: int = 0
 
 
-async def _broadcast_event(event_type: str, data: dict):
+async def _broadcast_event(event_type: str, data: dict) -> None:
     """Send event to all SSE listeners."""
     msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
     dead = []
@@ -58,59 +51,80 @@ async def _broadcast_event(event_type: str, data: dict):
         _event_queues.remove(q)
 
 
+def broadcast_note_created(data: dict) -> None:
+    """Non-async helper to schedule broadcast from any context."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_event("note_created", data))
+    except RuntimeError:
+        pass
+
+
+def broadcast_note_updated(data: dict) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_event("note_updated", data))
+    except RuntimeError:
+        pass
+
+
+def broadcast_note_deleted(data: dict) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_event("note_deleted", data))
+    except RuntimeError:
+        pass
+
+
+def broadcast_sync_event(event_type: str, data: dict) -> None:
+    """Broadcast sync-start/sync-complete/sync-failure events."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_event(event_type, data))
+    except RuntimeError:
+        pass
+
+
 @router.post("", response_model=NoteResponse)
 async def create_note(
     body: CreateNoteRequest,
+    db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    """Create a new note and index it in ChromaDB."""
-    note_id = str(uuid.uuid4())[:8]
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Generate embedding
-    model = await asyncio.to_thread(_get_model)
-    embedding = await asyncio.to_thread(lambda: model.encode(body.content).tolist())
-
-    # Store in ChromaDB
-    collection = get_chroma_collection()
-    collection.add(
-        ids=[note_id],
-        documents=[body.content],
-        metadatas=[{
-            "title": body.title,
-            "source": body.source,
-            "tags": body.tags,
-            "timestamp": now,
-            "created_by": _user,
-        }],
-        embeddings=[embedding],
-    )
-    from services.search_service import invalidate_search_cache
-    from routers.graph import invalidate_graph_cache
-
-    invalidate_search_cache()
-    invalidate_graph_cache()
+    """Create a new note — canonical PostgreSQL document with Chroma chunks."""
+    try:
+        result = await note_service.create(
+            title=body.title,
+            content=body.content,
+            source=body.source,
+            tags=body.tags,
+            db=db,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create note: {exc}")
 
     # Broadcast to SSE listeners
     await _broadcast_event("note_created", {
-        "id": note_id,
-        "title": body.title,
-        "source": body.source,
-        "created_at": now,
+        "id": result["id"],
+        "title": result["title"],
+        "source": result["source"],
+        "created_at": result["created_at"],
+        "chunk_count": result["chunk_count"],
     })
 
     return NoteResponse(
-        id=note_id,
-        title=body.title,
-        content=body.content,
-        source=body.source,
-        created_at=now,
+        id=result["id"],
+        title=result["title"],
+        source=result["source"],
+        created_at=result["created_at"],
+        chunk_count=result["chunk_count"],
     )
 
 
 @router.get("/stream")
 async def note_stream(_user: str = Depends(get_current_user)):
-    """SSE stream for real-time note updates."""
+    """SSE stream for real-time note and sync updates."""
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
