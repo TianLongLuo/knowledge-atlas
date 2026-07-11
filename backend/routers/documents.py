@@ -31,9 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 def _pseudo_id(chroma_id: str) -> int:
-    """Return a stable negative route ID for a Chroma record."""
+    """Return a stable JavaScript-safe negative route ID for a Chroma record.
+
+    JSON numbers are IEEE-754 doubles in browsers.  Keep the magnitude below
+    2**52 so document IDs survive JSON parsing and client-side routing intact.
+    """
     digest = hashlib.blake2b(chroma_id.encode(), digest_size=8).digest()
-    return -(int.from_bytes(digest, "big") & ((1 << 63) - 1) or 1)
+    return -(int.from_bytes(digest, "big") & ((1 << 52) - 1) or 1)
 
 
 def _get_chroma_docs() -> list[dict]:

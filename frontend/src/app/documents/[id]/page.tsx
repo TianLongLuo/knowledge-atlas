@@ -125,7 +125,7 @@ export default function DocumentDetailPage() {
             <Input
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
-              className="text-xl font-bold bg-slate-800 border-slate-700 text-white"
+              className="text-xl font-bold bg-background/70"
               placeholder="标题"
             />
           </div>
@@ -221,11 +221,11 @@ export default function DocumentDetailPage() {
             <Textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              className="min-h-[400px] font-mono text-sm bg-slate-800 border-slate-700 text-white resize-y"
+              className="min-h-[400px] text-sm bg-background/70 resize-y"
               placeholder="文档内容..."
             />
           ) : (
-            <div className="prose prose-invert max-w-none whitespace-pre-wrap text-sm leading-relaxed">
+            <div className="max-w-none whitespace-pre-wrap text-sm leading-relaxed font-[ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,Segoe_UI,sans-serif]">
               {document.content || "无内容"}
             </div>
           )}

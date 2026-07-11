@@ -172,12 +172,12 @@ export default function DocumentsPage() {
                     {confirmDelete === doc.id ? (
                       <div className="flex items-center gap-1">
                         <Button size="sm" variant="destructive"
-                          onClick={() => handleDelete(doc.id)}
+                          onClick={(event) => { event.stopPropagation(); void handleDelete(doc.id); }}
                           disabled={deleting === doc.id}>
                           {deleting === doc.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "确认"}
                         </Button>
                         <Button size="sm" variant="ghost"
-                          onClick={() => setConfirmDelete(null)}>
+                          onClick={(event) => { event.stopPropagation(); setConfirmDelete(null); }}>
                           取消
                         </Button>
                       </div>

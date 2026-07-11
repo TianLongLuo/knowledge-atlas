@@ -26,15 +26,21 @@ async def dashboard_stats(
         await db.execute(select(SyncState).order_by(SyncState.updated_at.desc()).limit(1))
     ).scalar_one_or_none()
     try:
-        chroma_count = get_chroma_collection().count()
+        chroma = get_chroma_collection().get(include=["metadatas"])
+        metadatas = chroma.get("metadatas") or []
+        # PostgreSQL already counts every synced document and chunk.  Only
+        # standalone Chroma notes (without a document_id) should supplement it.
+        standalone_notes = sum(
+            1 for metadata in metadatas if not (metadata or {}).get("document_id")
+        )
     except Exception:
-        chroma_count = 0
+        standalone_notes = 0
     status = "idle"
     if latest_sync:
         status = {"running": "syncing", "failed": "error"}.get(latest_sync.status, "idle")
     return {
-        "total_documents": pg_documents + chroma_count,
-        "total_chunks": pg_chunks + chroma_count,
+        "total_documents": pg_documents + standalone_notes,
+        "total_chunks": pg_chunks + standalone_notes,
         "last_sync_time": latest_sync.last_synced_at if latest_sync else None,
         "sync_status": status,
     }

@@ -11,7 +11,8 @@ A RAG-powered knowledge management backend with:
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,46 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("knowledge-atlas")
+
+
+async def _run_automatic_notion_sync() -> None:
+    """Run Notion sync on a safe interval without requiring a UI click."""
+    from sqlalchemy import select
+
+    from database import async_session_factory
+    from models import SyncState
+    from services.notion_sync import NotionSyncService
+
+    while True:
+        try:
+            async with async_session_factory() as session:
+                running = await session.execute(
+                    select(SyncState).where(
+                        SyncState.source_type == "notion",
+                        SyncState.status == "running",
+                    )
+                )
+                if running.scalar_one_or_none() is None:
+                    result = await session.execute(
+                        select(SyncState).where(
+                            SyncState.source_type == "notion",
+                            SyncState.source_id == settings.notion_database_id,
+                        )
+                    )
+                    state = result.scalar_one_or_none()
+                    if state is None:
+                        state = SyncState(source_type="notion", source_id=settings.notion_database_id)
+                        session.add(state)
+                    state.status = "running"
+                    state.error_message = None
+                    await session.commit()
+                    await session.refresh(state)
+                    await NotionSyncService().sync_all(state.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Automatic Notion sync failed")
+        await asyncio.sleep(settings.notion_auto_sync_interval_minutes * 60)
 
 
 # ── Application lifecycle ───────────────────────────────────────────
@@ -52,7 +93,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"ChromaDB connection issue: {e}")
 
+    sync_task: asyncio.Task | None = None
+    if (
+        settings.notion_auto_sync_enabled
+        and settings.notion_api_key
+        and settings.notion_database_id
+    ):
+        sync_task = asyncio.create_task(_run_automatic_notion_sync())
+        logger.info(
+            "Automatic Notion sync enabled every %d minutes",
+            settings.notion_auto_sync_interval_minutes,
+        )
+
     yield
+
+    if sync_task:
+        sync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await sync_task
 
     await engine.dispose()
     logger.info("Knowledge Atlas backend shut down")

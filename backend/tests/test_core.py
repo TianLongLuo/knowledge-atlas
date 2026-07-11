@@ -15,6 +15,7 @@ def test_pseudo_ids_are_stable_negative_and_distinct():
     assert first < 0
     assert first == _pseudo_id("chroma-a")
     assert first != _pseudo_id("chroma-b")
+    assert abs(first) < 2**52
 
 
 def test_graph_classification_and_snippet_are_deterministic():

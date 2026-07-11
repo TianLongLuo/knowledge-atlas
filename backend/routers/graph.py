@@ -89,6 +89,12 @@ def content_snippet(text: str, max_len: int = 110) -> str:
     return compact[:max_len] + "…"
 
 
+def display_label(title: str, max_len: int = 12) -> str:
+    """Compact node labels prevent the 3D graph from becoming unreadable."""
+    compact = " ".join(title.split())
+    return compact if len(compact) <= max_len else compact[:max_len] + "…"
+
+
 def _empty_response() -> GraphResponse:
     return GraphResponse(
         nodes=[],
@@ -174,7 +180,7 @@ async def get_full_graph(
             group_counts[group] = group_counts.get(group, 0) + 1
             nodes_by_id[node_id] = GraphNode(
                 id=node_id,
-                label=title[:80],
+                label=display_label(title),
                 group=group,
                 snippet=content_snippet(text),
                 document_id=aggregate["document_id"],

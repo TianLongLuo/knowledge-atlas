@@ -28,6 +28,8 @@ docker compose ps
 
 默认入口是 `http://服务器地址:3000`。公网部署时应在前面放置 Caddy 或 Nginx、启用 HTTPS，把 `CORS_ORIGINS` 改为真实 HTTPS 域名，并设置 `SESSION_COOKIE_SECURE=true`。
 
+配置了 `NOTION_API_KEY` 和 `NOTION_DATABASE_ID` 后，服务会在启动时同步一次，并按 `NOTION_AUTO_SYNC_INTERVAL_MINUTES`（默认 60 分钟）持续增量同步；无需在网页里手动点击。
+
 ## 本地开发
 
 后端：
