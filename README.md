@@ -7,9 +7,9 @@ A private knowledge-management app for a Linux server: Notion incremental sync, 
 - Documents are stored in PostgreSQL and split into chunks for search and citation.
 - Chroma stores embeddings for those chunks. Search and the AI assistant both retrieve from this existing vector database.
 - The AI assistant first retrieves relevant chunks, then sends only that context plus the user question to DeepSeek. Answers include citations back to local documents.
-- Assistant memory is inspectable: L0 stores raw conversation turns, L1 reports the real Chroma vector count, L2 stores the retrieved context used for each answer, and L3 is reserved for explicitly reviewed profile data. Recent L0 turns are included in the next DeepSeek request.
+- Assistant memory is inspectable: L0 stores raw conversation turns, L1 reports the real Chroma vector count, L2 stores the retrieved context used for each answer, and L3 stores evidence-backed insight candidates. Recent L0 turns and only user-confirmed L3 insights are included in later DeepSeek requests.
 - The agent status endpoint checks three things separately: whether DeepSeek is configured, whether DeepSeek is reachable, and whether the vector store contains vectors.
-- The knowledge map uses Chroma ANN Top-K edges and an Obsidian-style 2D force layout. Source-type pills show the type count and filter the graph; hovering reveals only the strongest links, and linked notes open in an in-page reader.
+- The knowledge graph uses document-level Chroma ANN neighbors, Mutual-KNN noise filtering, a Canvas force engine, zoom/pan/node dragging, normalized source types, tag filters, global and depth-1/2/3 local graphs, and an in-page note reader.
 - Authentication uses `HttpOnly` cookies. Production rejects default secrets, default database passwords, and missing admin password hashes.
 - CORS accepts only explicit origins. `/api/health` and `/api/ready` are available for uptime and dependency checks.
 
@@ -81,6 +81,33 @@ The UI reports safe, specific diagnostics for HTTP 401 (invalid key), HTTP 404
 timeouts. Provider response bodies and credentials are never returned to the browser.
 
 Most failures are one of: expired key, wrong `DEEPSEEK_BASE_URL`, wrong `DEEPSEEK_MODEL`, server egress blocked, or a backend container that was not rebuilt after editing `.env`.
+
+### Personal knowledge and reflection memory
+
+Every assistant turn follows the same grounded pipeline:
+
+1. Store the raw user turn as L0 conversation evidence.
+2. Retrieve relevant chunks from Chroma. If nothing relevant is found, do not ask the model to invent an answer.
+3. Store the exact retrieved context as L2 retrieval evidence.
+4. Send the retrieved notes, recent conversation, and user-confirmed long-term insights to DeepSeek.
+5. Return citations and store the assistant turn.
+6. Ask DeepSeek for at most one durable insight candidate. The candidate remains `pending` and is excluded from future prompts until the user confirms it.
+
+The UI offers three modes:
+
+- `Knowledge`: direct answers grounded in notes.
+- `Reflection`: separates explicit evidence from inference and asks a clarifying question.
+- `Socratic`: explores assumptions and trade-offs without making decisions for the user.
+
+The review queue allows each proposed value, goal, belief, tension, or pattern to be confirmed or rejected. Rejected and pending hypotheses are never treated as established facts about the user.
+
+### Obsidian-style knowledge graph
+
+- `react-force-graph-2d` provides a continuously simulated Canvas graph with zoom, pan, drag-to-pin, fit-to-screen, and stable collision-free positioning.
+- Node colors represent normalized source types (`Notion`, `Manual note`, `Web page`, `File`, `Imported`, `Unknown`). Importer-specific labels no longer become arbitrary graph types.
+- Tags and source types can be independently filtered.
+- Hovering focuses direct relationships; selecting a note enables depth-1/2/3 local graph exploration.
+- The note reader can open the full document or start a document-scoped AI conversation.
 
 ## Local Development
 

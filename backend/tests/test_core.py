@@ -1,6 +1,6 @@
 from auth import create_access_token, decode_access_token, hash_password, verify_password
 from routers.documents import _pseudo_id
-from routers.graph import content_snippet, dominant_group
+from routers.graph import content_snippet, dominant_group, normalized_source_type, normalized_tags
 
 
 def test_password_and_token_round_trip():
@@ -22,3 +22,10 @@ def test_graph_classification_and_snippet_are_deterministic():
     assert dominant_group("Python Docker API 架构", "后端", {}) == "技术"
     assert dominant_group("anything", "title", {"category": "自定义"}) == "自定义"
     assert content_snippet("a   b\n c", 20) == "a b c"
+
+
+def test_graph_source_types_and_tags_are_normalized():
+    assert normalized_source_type("flomo 75", {}) == "Imported"
+    assert normalized_source_type("anything", {"source_type": "notion"}) == "Notion"
+    assert normalized_source_type("mystery", {}) == "Unknown"
+    assert normalized_tags({"tags": "business，growth, business"}) == ["business", "growth"]

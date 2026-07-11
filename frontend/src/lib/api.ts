@@ -152,7 +152,7 @@ export async function search(params: { query: string; search_type?: string; top_
   };
 }
 
-export interface AgentRequest { question: string; session_id?: string; document_id?: string; top_k?: number }
+export interface AgentRequest { question: string; session_id?: string; document_id?: string; top_k?: number; mode?: "knowledge" | "reflection" | "socratic" }
 export interface AgentCitation {
   document_id: string; document_title: string; content: string; relevance_score: number; source_url?: string | null;
 }
@@ -168,9 +168,16 @@ export interface AgentStatus {
 export function getAgentStatus() { return apiFetch<AgentStatus>("/agent/status"); }
 export interface MemoryLevelStatus { level: string; title: string; count: number; description: string }
 export interface AgentMemoryStatus { session_id?: string | null; vector_count: number; levels: MemoryLevelStatus[] }
+export interface MemoryInsight { id: string; statement: string; insight_type: string; confidence: number; status: "pending" | "confirmed" | "rejected"; evidence_document_ids: number[]; created_at?: string | null }
 export function getAgentMemoryStatus(sessionId?: string) {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
   return apiFetch<AgentMemoryStatus>(`/agent/memory/status${query}`);
+}
+export function getMemoryInsights(status?: string) {
+  return apiFetch<MemoryInsight[]>(`/agent/memory/insights${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+}
+export function reviewMemoryInsight(id: string, status: "confirmed" | "rejected") {
+  return apiFetch<MemoryInsight>(`/agent/memory/insights/${encodeURIComponent(id)}/review`, { method: "POST", body: JSON.stringify({ status }) });
 }
 export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
   const raw = await apiFetch<{ question: string; answer: string; session_id: string; citations: Array<{

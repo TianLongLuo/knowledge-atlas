@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -98,6 +98,7 @@ class AskRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     session_id: str | None = Field(default=None, max_length=128)
     document_id: int | None = None
+    mode: Literal["knowledge", "reflection", "socratic"] = "knowledge"
 
 
 class Citation(BaseModel):
@@ -137,6 +138,20 @@ class AgentMemoryStatusResponse(BaseModel):
     session_id: str | None = None
     levels: list[MemoryLevelStatus]
     vector_count: int = 0
+
+
+class MemoryInsightResponse(BaseModel):
+    id: str
+    statement: str
+    insight_type: str
+    confidence: float
+    status: str
+    evidence_document_ids: list[int] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class MemoryReviewRequest(BaseModel):
+    status: Literal["confirmed", "rejected"]
 
 
 # ── Sync ────────────────────────────────────────────────────────────

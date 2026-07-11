@@ -30,6 +30,8 @@ class GraphNode(BaseModel):
     snippet: str = ""
     document_id: int
     source: str = "unknown"
+    node_type: str = "Unknown"
+    tags: list[str] = Field(default_factory=list)
     degree: int = 0
 
 
@@ -46,6 +48,8 @@ class GraphStats(BaseModel):
     edge_count: int
     isolated_count: int
     groups: dict[str, int]
+    types: dict[str, int] = Field(default_factory=dict)
+    tags: dict[str, int] = Field(default_factory=dict)
 
 
 class GraphResponse(BaseModel):
@@ -65,6 +69,38 @@ _KEYWORDS = {
     "学习": ("学习", "笔记", "教程", "阅读", "课程", "知识", "learn", "study", "book"),
     "创作": ("写作", "小说", "文字", "故事", "创作", "人物", "情节", "write", "story"),
 }
+
+_SOURCE_TYPES = {
+    "notion": "Notion",
+    "manual": "Manual note",
+    "note": "Manual note",
+    "file": "File",
+    "pdf": "File",
+    "web": "Web page",
+    "url": "Web page",
+    "telegram": "Imported",
+    "flomo": "Imported",
+    "chromadb": "Imported",
+}
+
+
+def normalized_source_type(source: str, metadata: dict) -> str:
+    """Map importer-specific source labels into stable graph types."""
+    explicit = str(metadata.get("source_type") or "").strip().lower()
+    raw = explicit or source.strip().lower()
+    for key, label in _SOURCE_TYPES.items():
+        if key in raw:
+            return label
+    return "Unknown"
+
+
+def normalized_tags(metadata: dict) -> list[str]:
+    raw = metadata.get("tags") or metadata.get("tag") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.replace("，", ",").split(",")]
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(str(tag).strip()[:40] for tag in raw if str(tag).strip()))[:12]
 
 
 def dominant_group(text: str, title: str, metadata: dict) -> str:
@@ -89,8 +125,8 @@ def content_snippet(text: str, max_len: int = 110) -> str:
     return compact[:max_len] + "…"
 
 
-def display_label(title: str, max_len: int = 12) -> str:
-    """Compact node labels prevent the 3D graph from becoming unreadable."""
+def display_label(title: str, max_len: int = 80) -> str:
+    """Keep enough title for search/tooltips; the Canvas controls rendering."""
     compact = " ".join(title.split())
     return compact if len(compact) <= max_len else compact[:max_len] + "…"
 
@@ -172,12 +208,19 @@ async def get_full_graph(
         query_embeddings: list[list[float]] = []
         query_node_ids: list[str] = []
         group_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        tag_counts: dict[str, int] = {}
         for node_id, aggregate in selected_aggregates:
             text = "\n".join(aggregate["texts"])
             title = aggregate["title"]
             metadata = aggregate["metadata"]
             group = dominant_group(text, title, metadata)
+            source_type = normalized_source_type(aggregate["source"], metadata)
+            tags = normalized_tags(metadata)
             group_counts[group] = group_counts.get(group, 0) + 1
+            type_counts[source_type] = type_counts.get(source_type, 0) + 1
+            for tag in tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
             nodes_by_id[node_id] = GraphNode(
                 id=node_id,
                 label=display_label(title),
@@ -185,6 +228,8 @@ async def get_full_graph(
                 snippet=content_snippet(text),
                 document_id=aggregate["document_id"],
                 source=aggregate["source"],
+                node_type=source_type,
+                tags=tags,
             )
             vectors = aggregate["vectors"]
             if vectors:
@@ -195,7 +240,7 @@ async def get_full_graph(
                 ])
                 query_node_ids.append(node_id)
 
-        edges_by_pair: dict[tuple[str, str], GraphEdge] = {}
+        proposals: dict[tuple[str, str], dict[str, object]] = {}
         if query_embeddings:
             nearest = collection.query(
                 query_embeddings=query_embeddings,
@@ -223,19 +268,26 @@ async def get_full_graph(
                     if similarity < min_similarity:
                         continue
                     pair = tuple(sorted((source_id, target_id)))
-                    current = edges_by_pair.get(pair)
-                    if current is None or similarity > current.weight:
-                        edges_by_pair[pair] = GraphEdge(
-                            source=pair[0],
-                            target=pair[1],
-                            weight=round(similarity, 4),
-                            label=f"semantic {similarity:.2f}",
-                        )
+                    proposal = proposals.setdefault(pair, {"weight": 0.0, "directions": set()})
+                    proposal["weight"] = max(float(proposal["weight"]), similarity)
+                    directions = proposal["directions"]
+                    if isinstance(directions, set):
+                        directions.add(source_id)
                     accepted += 1
                     if accepted >= neighbors:
                         break
 
-        edges = sorted(edges_by_pair.values(), key=lambda edge: edge.weight, reverse=True)[:max_edges]
+        # Mutual KNN removes one-sided/noisy similarities. Very strong edges
+        # survive even when only one endpoint selected the other.
+        edges = [
+            GraphEdge(
+                source=pair[0], target=pair[1], weight=round(float(value["weight"]), 4),
+                label=f"semantic {float(value['weight']):.2f}",
+            )
+            for pair, value in proposals.items()
+            if len(value["directions"]) >= 2 or float(value["weight"]) >= min(0.95, min_similarity + 0.12)
+        ]
+        edges = sorted(edges, key=lambda edge: edge.weight, reverse=True)[:max_edges]
         for edge in edges:
             nodes_by_id[edge.source].degree += 1
             nodes_by_id[edge.target].degree += 1
@@ -249,6 +301,8 @@ async def get_full_graph(
             edge_count=len(edges),
             isolated_count=isolated_count,
             groups=group_counts,
+            types=type_counts,
+            tags=dict(sorted(tag_counts.items(), key=lambda item: item[1], reverse=True)[:50]),
         )
         logger.info(
             "ANN graph built: nodes=%d edges=%d isolated=%d threshold=%.2f k=%d",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -23,7 +24,10 @@ from database import get_db
 from config import settings
 from database import get_chroma_collection
 from models import AgentMemory
-from schemas import AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation, MemoryLevelStatus
+from schemas import (
+    AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation,
+    MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
+)
 from services.search_service import SearchService
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -65,6 +69,84 @@ async def save_memory(
     await db.flush()
 
 
+def insight_response(memory: AgentMemory) -> MemoryInsightResponse:
+    metadata = memory.metadata_ or {}
+    return MemoryInsightResponse(
+        id=str(memory.id),
+        statement=memory.content,
+        insight_type=str(metadata.get("insight_type") or "pattern"),
+        confidence=float(metadata.get("confidence") or 0),
+        status=str(metadata.get("status") or "pending"),
+        evidence_document_ids=[int(value) for value in metadata.get("evidence_document_ids", []) if str(value).isdigit()],
+        created_at=memory.created_at,
+    )
+
+
+@router.get("/memory/insights", response_model=list[MemoryInsightResponse])
+async def memory_insights(
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    query = select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(100)
+    memories = (await db.execute(query)).scalars().all()
+    results = [insight_response(memory) for memory in memories]
+    return [item for item in results if not status or item.status == status]
+
+
+@router.post("/memory/insights/{memory_id}/review", response_model=MemoryInsightResponse)
+async def review_memory_insight(
+    memory_id: str,
+    body: MemoryReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    memory = await db.get(AgentMemory, memory_id)
+    if not memory or memory.level != "L3":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Memory insight not found")
+    memory.metadata_ = {**(memory.metadata_ or {}), "status": body.status}
+    await db.flush()
+    return insight_response(memory)
+
+
+async def extract_candidate_insight(
+    client: AsyncOpenAI,
+    db: AsyncSession,
+    question: str,
+    answer: str,
+    document_ids: list[int],
+) -> None:
+    """Extract one evidence-backed hypothesis; never auto-confirm it."""
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": "Extract at most one durable user insight from the exchange. Return JSON only with keys statement, insight_type, confidence. insight_type must be value, goal, belief, tension, or pattern. Use confidence 0 when there is no durable insight. Do not diagnose personality or mental health."},
+                {"role": "user", "content": f"Question: {question}\nAnswer: {answer[:3000]}"},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=220,
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        statement = str(payload.get("statement") or "").strip()
+        confidence = max(0.0, min(1.0, float(payload.get("confidence") or 0)))
+        if not statement or confidence < 0.65:
+            return
+        duplicate = await db.scalar(select(AgentMemory.id).where(AgentMemory.level == "L3", AgentMemory.content == statement).limit(1))
+        if duplicate:
+            return
+        await save_memory(db, "global", "L3", "insight", statement[:2000], {
+            "insight_type": str(payload.get("insight_type") or "pattern"),
+            "confidence": confidence,
+            "status": "pending",
+            "evidence_document_ids": document_ids,
+        })
+    except Exception:
+        logger.exception("Unable to extract candidate memory insight")
+
+
 @router.get("/memory/status", response_model=AgentMemoryStatusResponse)
 async def memory_status(
     session_id: str | None = None,
@@ -86,7 +168,7 @@ async def memory_status(
             MemoryLevelStatus(level="L0", title="Conversation", count=counts.get("L0", 0), description="Raw user and assistant turns stored for session continuity."),
             MemoryLevelStatus(level="L1", title="Vector knowledge", count=vector_count, description="Persistent Chroma chunks available for semantic retrieval."),
             MemoryLevelStatus(level="L2", title="Retrieved context", count=counts.get("L2", 0), description="Knowledge snapshots actually retrieved and used in answers."),
-            MemoryLevelStatus(level="L3", title="Profile", count=0, description="Reserved for reviewed user preferences; no automatic profiling."),
+            MemoryLevelStatus(level="L3", title="Reviewed insights", count=counts.get("L3", 0), description="Evidence-backed hypotheses that you can confirm or reject."),
         ],
     )
 
@@ -153,6 +235,13 @@ async def ask_question(
         .limit(8)
     )
     recent_history = list(reversed(history_result.scalars().all()))
+    insight_result = await db.execute(
+        select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(30)
+    )
+    confirmed_insights = [
+        memory for memory in insight_result.scalars().all()
+        if (memory.metadata_ or {}).get("status") == "confirmed"
+    ][:12]
     await save_memory(db, session_id, "L0", "user", body.question)
 
     # Step 1: Retrieve relevant chunks
@@ -223,11 +312,17 @@ async def ask_question(
         max_retries=2,
     )
 
+    mode_instructions = {
+        "knowledge": "Answer directly and accurately from the supplied notes.",
+        "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and end with one clarifying question.",
+        "socratic": "Use a Socratic style. Do not make the decision for the user. Connect the notes to the present question and ask one precise question that exposes an assumption or trade-off.",
+    }
     system_prompt = (
-        "You are a helpful knowledge assistant. Answer the user's question based ONLY "
-        "on the provided document context. If the context doesn't contain enough "
-        "information to answer the question confidently, say so explicitly. "
-        "Always cite which documents you used. Be concise and accurate."
+        "You are the user's private Knowledge Atlas assistant. Every substantive claim about the user "
+        "must be grounded in the supplied notes or confirmed memories. Never invent biography, values, "
+        "intentions, personality, or mental-health conclusions. Distinguish evidence from inference. "
+        "If evidence is insufficient, say so. Cite source numbers such as [Doc 1]. "
+        + mode_instructions[body.mode]
     )
 
     try:
@@ -243,7 +338,9 @@ async def ask_question(
                 *history_messages,
                 {
                     "role": "user",
-                    "content": f"Context from knowledge base:\n\n{context}\n\n"
+                    "content": f"Confirmed long-term memories (user reviewed):\n"
+                    + ("\n".join(f"- {memory.content}" for memory in confirmed_insights) or "- None yet")
+                    + f"\n\nContext retrieved from vector knowledge base:\n\n{context}\n\n"
                     f"Question: {body.question}\n\n"
                     f"Please answer based on the context above. Include citations "
                     f"referring to document numbers (e.g., [Doc 1], [Doc 2]).",
@@ -254,6 +351,9 @@ async def ask_question(
         )
         answer = response.choices[0].message.content or ""
         await save_memory(db, session_id, "L0", "assistant", answer)
+        await extract_candidate_insight(
+            client, db, body.question, answer, [result.document_id for result in search_results]
+        )
     except Exception as exc:
         logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
         diagnostic = deepseek_error_message(exc)
