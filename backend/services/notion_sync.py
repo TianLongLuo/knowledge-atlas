@@ -228,89 +228,141 @@ class NotionSyncService:
         logger.info(f"Synced Notion page: {title} ({len(chunks)} chunks)")
 
     async def _fetch_page_content(self, notion, page_id: str) -> str:
-        """Fetch all block content for a Notion page."""
-        blocks = []
+        """Fetch all block content for a Notion page, recursively including child blocks."""
+        blocks = await self._fetch_blocks_recursive(notion, page_id, depth=0)
+        return self._blocks_to_text(blocks)
+
+    async def _fetch_blocks_recursive(self, notion, block_id: str, depth: int = 0, max_depth: int = 8) -> list[dict]:
+        """Recursively fetch blocks with pagination and depth/cycle safety."""
+        all_blocks: list[dict] = []
+        if depth >= max_depth:
+            return all_blocks
+
+        seen_ids: set[str] = set()
         start_cursor = None
 
         try:
             while True:
-                params = {"block_id": page_id, "page_size": 100}
+                params: dict = {"block_id": block_id, "page_size": 100}
                 if start_cursor:
                     params["start_cursor"] = start_cursor
 
                 response = await notion.blocks.children.list(**params)
                 batch = response.get("results", [])
-                blocks.extend(batch)
+                for block in batch:
+                    block_id_str = str(block.get("id", ""))
+                    # Cycle safety: skip if we've seen this block
+                    if block_id_str in seen_ids:
+                        continue
+                    seen_ids.add(block_id_str)
+                    all_blocks.append(block)
+
+                    # Recursively fetch children
+                    if block.get("has_children"):
+                        try:
+                            children = await self._fetch_blocks_recursive(
+                                notion, block_id_str, depth + 1, max_depth
+                            )
+                            all_blocks.extend(children)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to fetch children for block %s at depth %d: %s",
+                                block_id_str, depth + 1, e
+                            )
 
                 if not response.get("has_more"):
                     break
                 start_cursor = response.get("next_cursor")
         except Exception as e:
-            logger.error(f"Error fetching blocks for page {page_id}: {e}")
-            return ""
+            logger.error("Error fetching blocks for %s at depth %d: %s", block_id, depth, e)
 
-        return self._blocks_to_text(blocks)
+        return all_blocks
 
-    def _blocks_to_text(self, blocks: list[dict]) -> str:
-        """Convert Notion blocks to plain text."""
+    def _blocks_to_text(self, blocks: list[dict], indent: str = "") -> str:
+        """Convert Notion blocks to plain text, preserving headings, lists, todos, quotes, code."""
+
+        def _rich_text(block: dict) -> str:
+            """Extract rich text from a block."""
+            block_type = block.get("type", "")
+            rt = block.get(block_type, {}).get("rich_text", [])
+            return "".join(t.get("plain_text", "") for t in rt)
+
         text_parts = []
-
         for block in blocks:
             block_type = block.get("type", "")
 
             if block_type in ("paragraph", "heading_1", "heading_2", "heading_3"):
-                rich_text = block.get(block_type, {}).get("rich_text", [])
-                line = "".join(t.get("plain_text", "") for t in rich_text)
-
+                line = _rich_text(block)
                 if block_type.startswith("heading"):
                     prefix = "#" * int(block_type[-1])
                     line = f"\n{prefix} {line}\n"
-                text_parts.append(line)
+                text_parts.append(indent + line)
 
             elif block_type == "bulleted_list_item":
-                rich_text = block.get("bulleted_list_item", {}).get("rich_text", [])
-                line = "".join(t.get("plain_text", "") for t in rich_text)
-                text_parts.append(f"- {line}")
+                line = _rich_text(block)
+                text_parts.append(f"{indent}- {line}")
 
             elif block_type == "numbered_list_item":
-                rich_text = block.get("numbered_list_item", {}).get("rich_text", [])
-                line = "".join(t.get("plain_text", "") for t in rich_text)
-                text_parts.append(f"1. {line}")
+                line = _rich_text(block)
+                text_parts.append(f"{indent}1. {line}")
 
             elif block_type == "to_do":
-                rich_text = block.get("to_do", {}).get("rich_text", [])
+                line = _rich_text(block)
                 checked = block.get("to_do", {}).get("checked", False)
-                line = "".join(t.get("plain_text", "") for t in rich_text)
-                text_parts.append(f"- [{'x' if checked else ' '}] {line}")
+                text_parts.append(f"{indent}- [{'x' if checked else ' '}] {line}")
 
             elif block_type == "quote":
-                rich_text = block.get("quote", {}).get("rich_text", [])
-                line = "".join(t.get("plain_text", "") for t in rich_text)
-                text_parts.append(f"> {line}")
+                line = _rich_text(block)
+                text_parts.append(f"{indent}> {line}")
 
             elif block_type == "code":
-                rich_text = block.get("code", {}).get("rich_text", [])
-                code = "".join(t.get("plain_text", "") for t in rich_text)
-                text_parts.append(f"```\n{code}\n```")
+                rt = block.get("code", {}).get("rich_text", [])
+                code = "".join(t.get("plain_text", "") for t in rt)
+                lang = block.get("code", {}).get("language", "")
+                lang_str = f"{lang}\n" if lang else ""
+                text_parts.append(f"{indent}```{lang_str}{code}\n{indent}```")
+
+            elif block_type == "callout":
+                icon = block.get("callout", {}).get("icon", {})
+                icon_text = icon.get("emoji", "") if isinstance(icon, dict) else ""
+                line = _rich_text(block)
+                text_parts.append(f"{indent}{icon_text} {line}".strip())
+
+            elif block_type == "toggle":
+                line = _rich_text(block)
+                text_parts.append(f"{indent}> {line}")
 
             elif block_type == "image":
                 caption = block.get("image", {}).get("caption", [])
                 cap_text = "".join(t.get("plain_text", "") for t in caption)
-                text_parts.append(f"[Image: {cap_text}]")
+                img_url = block.get("image", {}).get("file", {}).get("url") or block.get("image", {}).get("external", {}).get("url", "")
+                text_parts.append(f"{indent}[Image: {cap_text or img_url}]")
 
             elif block_type == "divider":
-                text_parts.append("---")
+                text_parts.append(f"{indent}---")
 
             elif block_type == "bookmark":
                 bookmark_url = block.get("bookmark", {}).get("url", "")
                 caption = block.get("bookmark", {}).get("caption", [])
                 cap_text = "".join(t.get("plain_text", "") for t in caption)
-                text_parts.append(f"[Bookmark: {cap_text} ({bookmark_url})]")
+                text_parts.append(f"{indent}[Bookmark: {cap_text} ({bookmark_url})]")
 
-            # Recursively process children if present
-            if block.get("has_children"):
-                # We don't recursively fetch nested children here for simplicity
-                pass
+            elif block_type in ("table", "table_row"):
+                # Basic table handling
+                rows = block.get("table", {}).get("rows", [])
+                for row in rows:
+                    cells = [cell.get("plain_text", "") for cell in row.get("cells", [])]
+                    text_parts.append(f"{indent}| {' | '.join(cells)} |")
+
+            elif block_type == "child_page" or block_type == "child_database":
+                title = block.get(block_type, {}).get("title", "")
+                text_parts.append(f"{indent}[{block_type}: {title}]")
+
+            else:
+                # Generic fallback: try to extract text
+                line = _rich_text(block)
+                if line.strip():
+                    text_parts.append(f"{indent}{line}")
 
         return "\n".join(text_parts)
 
