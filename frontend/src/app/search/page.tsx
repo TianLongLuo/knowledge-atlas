@@ -62,7 +62,7 @@ export default function SearchPage() {
 
   const sourceLabel = (t: string) => {
     const labels: Record<string, string> = {
-      file: "文件", url: "网址", manual: "手动", api: "API",
+      file: "File", url: "URL", manual: "Manual", api: "API",
     };
     return labels[t] || t;
   };
@@ -70,9 +70,9 @@ export default function SearchPage() {
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">知识搜索</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Knowledge Search</h1>
         <p className="text-muted-foreground mt-1">
-          在知识库中搜索相关内容
+          Search across your documents and semantic chunks.
         </p>
       </div>
 
@@ -83,7 +83,7 @@ export default function SearchPage() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="输入搜索关键词..."
+                placeholder="Enter search keywords..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="pl-9"
@@ -97,13 +97,13 @@ export default function SearchPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="hybrid">混合搜索</SelectItem>
-                <SelectItem value="keyword">关键词</SelectItem>
-                <SelectItem value="vector">语义搜索</SelectItem>
+                <SelectItem value="hybrid">Hybrid</SelectItem>
+                <SelectItem value="keyword">Keyword</SelectItem>
+                <SelectItem value="vector">Semantic</SelectItem>
               </SelectContent>
             </Select>
             <Button type="submit" disabled={loading}>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "搜索"}
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
             </Button>
           </form>
         </CardContent>
@@ -114,9 +114,9 @@ export default function SearchPage() {
         <Card>
           <CardHeader>
             <CardTitle>
-              搜索结果
+              Search results
               <span className="text-sm text-muted-foreground font-normal ml-2">
-                {loading ? "搜索中..." : `共 ${total} 条结果`}
+                {loading ? "Searching..." : `${total} results`}
               </span>
             </CardTitle>
           </CardHeader>
@@ -130,9 +130,9 @@ export default function SearchPage() {
             ) : results.length === 0 ? (
               <div className="text-center py-8">
                 <Search className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
-                <p className="text-muted-foreground">未找到相关结果</p>
+                <p className="text-muted-foreground">No matching results</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  尝试使用不同的关键词或搜索类型
+                  Try different keywords or a different search mode.
                 </p>
               </div>
             ) : (
@@ -150,7 +150,7 @@ export default function SearchPage() {
                         <div className="flex items-center gap-2 mb-1">
                           <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                           <span className="font-medium text-sm truncate">
-                            {item.document_title || "未知文档"}
+                            {item.document_title || "Untitled document"}
                           </span>
                           <Badge variant="outline" className="text-xs shrink-0">
                             {sourceLabel(item.source_type)}
@@ -162,7 +162,7 @@ export default function SearchPage() {
                       </div>
                       <div className="shrink-0 text-right">
                         <Badge variant="secondary" className="text-xs">
-                          相似度 {formatScore(item.score)}
+                          Similarity {formatScore(item.score)}
                         </Badge>
                         <ArrowRight className="h-4 w-4 text-muted-foreground mt-2 ml-auto" />
                       </div>

@@ -6,13 +6,12 @@ import {
   getDocument, updateDocument, deleteDocument,
   DocumentDetail,
 } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft, FileText, Calendar, HardDrive,
   Pencil, Trash2, Save, X, Loader2,
@@ -25,7 +24,6 @@ export default function DocumentDetailPage() {
 
   const [document, setDocument] = useState<DocumentDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("content");
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -92,16 +90,16 @@ export default function DocumentDetailPage() {
   if (!document) {
     return (
       <div className="max-w-5xl mx-auto text-center py-12">
-        <p className="text-muted-foreground">文档未找到</p>
+        <p className="text-muted-foreground">Document not found</p>
         <Button variant="outline" onClick={() => router.push("/documents")} className="mt-4">
-          <ArrowLeft className="mr-2 h-4 w-4" />返回文档列表
+          <ArrowLeft className="mr-2 h-4 w-4" />Back to documents
         </Button>
       </div>
     );
   }
 
   const sourceLabel = (t: string) => {
-    const labels: Record<string, string> = { file: "文件", url: "网址", manual: "手动", api: "API", chromadb: "ChromaDB", web: "网页" };
+    const labels: Record<string, string> = { file: "File", url: "URL", manual: "Manual", api: "API", chromadb: "ChromaDB", web: "Web" };
     return labels[t] || t;
   };
 
@@ -126,7 +124,7 @@ export default function DocumentDetailPage() {
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               className="text-xl font-bold bg-background/70"
-              placeholder="标题"
+              placeholder="Title"
             />
           </div>
         ) : (
@@ -145,29 +143,29 @@ export default function DocumentDetailPage() {
             <>
               <Button onClick={handleSave} disabled={saving} size="sm">
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
-                保存
+                Save
               </Button>
               <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setEditTitle(document.title); setEditContent(document.content || ""); }}>
-                <X className="h-4 w-4 mr-1" />取消
+                <X className="h-4 w-4 mr-1" />Cancel
               </Button>
             </>
           ) : (
             <>
               <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                <Pencil className="h-4 w-4 mr-1" />编辑
+                <Pencil className="h-4 w-4 mr-1" />Edit
               </Button>
               {confirmDelete ? (
                 <div className="flex items-center gap-1">
                   <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
-                    {deleting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}确认删除
+                    {deleting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}Confirm delete
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>取消</Button>
+                  <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
                 </div>
               ) : (
                 <Button variant="ghost" size="sm"
                   className="text-slate-500 hover:text-red-400"
                   onClick={() => setConfirmDelete(true)}>
-                  <Trash2 className="h-4 w-4 mr-1" />删除
+                  <Trash2 className="h-4 w-4 mr-1" />Delete
                 </Button>
               )}
             </>
@@ -182,29 +180,29 @@ export default function DocumentDetailPage() {
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-muted-foreground" />
               <div>
-                <p className="text-xs text-muted-foreground">来源类型</p>
+                <p className="text-xs text-muted-foreground">Source type</p>
                 <p className="text-sm font-medium">{sourceLabel(document.source_type)}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <HardDrive className="h-4 w-4 text-muted-foreground" />
               <div>
-                <p className="text-xs text-muted-foreground">文件大小</p>
+                <p className="text-xs text-muted-foreground">File size</p>
                 <p className="text-sm font-medium">{formatSize(document.file_size || 0)}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-muted-foreground" />
               <div>
-                <p className="text-xs text-muted-foreground">创建时间</p>
-                <p className="text-sm font-medium">{new Date(document.created_at).toLocaleString("zh-CN")}</p>
+                <p className="text-xs text-muted-foreground">Created</p>
+                <p className="text-sm font-medium">{new Date(document.created_at).toLocaleString("en-US")}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-muted-foreground" />
               <div>
-                <p className="text-xs text-muted-foreground">更新时间</p>
-                <p className="text-sm font-medium">{new Date(document.updated_at || document.created_at).toLocaleString("zh-CN")}</p>
+                <p className="text-xs text-muted-foreground">Updated</p>
+                <p className="text-sm font-medium">{new Date(document.updated_at || document.created_at).toLocaleString("en-US")}</p>
               </div>
             </div>
           </div>
@@ -214,7 +212,7 @@ export default function DocumentDetailPage() {
       {/* Content */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">文档内容</CardTitle>
+          <CardTitle className="text-lg">Document content</CardTitle>
         </CardHeader>
         <CardContent>
           {editing ? (
@@ -222,11 +220,11 @@ export default function DocumentDetailPage() {
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
               className="min-h-[400px] text-sm bg-background/70 resize-y"
-              placeholder="文档内容..."
+              placeholder="Document content..."
             />
           ) : (
             <div className="note-body max-w-none whitespace-pre-wrap text-sm leading-relaxed">
-              {document.content || "无内容"}
+              {document.content || "No content"}
             </div>
           )}
         </CardContent>

@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -27,8 +28,30 @@ async def agent_status(_user: str = Depends(get_current_user)):
     except Exception:
         logger.exception("Unable to inspect ChromaDB for agent readiness")
         vector_count = 0
+    deepseek_available = False
+    deepseek_error = None
+    if settings.deepseek_api_key:
+        client = AsyncOpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+            timeout=min(settings.deepseek_timeout_seconds, 10),
+            max_retries=0,
+        )
+        try:
+            await client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=[{"role": "user", "content": "ping"}],
+                temperature=0,
+                max_tokens=1,
+            )
+            deepseek_available = True
+        except Exception as exc:  # Keep details short and non-sensitive for the UI.
+            logger.warning("DeepSeek readiness probe failed: %s", exc)
+            deepseek_error = "DeepSeek API probe failed. Check the API key, base URL, model, and outbound network access."
     return AgentStatusResponse(
         deepseek_configured=bool(settings.deepseek_api_key),
+        deepseek_available=deepseek_available,
+        deepseek_error=deepseek_error,
         vector_store_available=vector_count > 0,
         vector_document_count=vector_count,
         model=settings.deepseek_model,
@@ -80,8 +103,6 @@ async def ask_question(
     context = "\n---\n".join(context_parts)
 
     # Step 3: Call DeepSeek
-    from openai import AsyncOpenAI
-
     if not settings.deepseek_api_key:
         # Fallback: return search results without AI synthesis
         return AskResponse(
@@ -139,7 +160,7 @@ async def ask_question(
         logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
         raise HTTPException(
             status_code=502,
-            detail="DeepSeek 请求失败。请检查服务器的 DEEPSEEK_API_KEY、DEEPSEEK_BASE_URL、DEEPSEEK_MODEL，然后重启后端。",
+            detail="DeepSeek request failed. Check DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, outbound network access, then rebuild/restart the backend.",
         ) from exc
 
     # Step 4: Build citations

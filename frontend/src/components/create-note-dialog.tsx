@@ -39,7 +39,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
       router.refresh();
       onCreated?.();
     } catch (e: unknown) {
-      setError(`${e instanceof Error ? e.message : "创建失败"}。请检查网络后重试，已填写的内容不会丢失。`);
+      setError(`${e instanceof Error ? e.message : "Create failed"}. Check the network and try again; your draft is still here.`);
     } finally {
       setLoading(false);
     }
@@ -50,22 +50,22 @@ export function CreateNoteDialog({ onCreated }: Props) {
       <DialogTrigger>
         <Button className="gap-2">
           <Plus className="h-4 w-4" />
-          新建笔记
+          New note
         </Button>
       </DialogTrigger>
       <DialogContent className="border-border/80 bg-popover/95 text-foreground sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>新建笔记</DialogTitle>
+          <DialogTitle>New note</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           <Input
-            placeholder="标题"
+            placeholder="Title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="bg-background/70"
           />
           <Textarea
-            placeholder="内容..."
+            placeholder="Content..."
             value={content}
             onChange={(e) => setContent(e.target.value)}
             rows={8}
@@ -78,7 +78,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
             className="w-full"
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            {loading ? "创建中..." : "保存到知识库"}
+            {loading ? "Creating..." : "Save to knowledge base"}
           </Button>
         </div>
       </DialogContent>

@@ -57,11 +57,11 @@ export default function DashboardPage() {
   const statusLabel = (status: string) => {
     switch (status) {
       case "idle":
-        return "空闲";
+        return "Idle";
       case "syncing":
-        return "同步中";
+        return "Syncing";
       case "error":
-        return "错误";
+        return "Error";
       default:
         return status;
     }
@@ -81,15 +81,15 @@ export default function DashboardPage() {
   };
 
   const formatTime = (t: string | null) => {
-    if (!t) return "从未";
-    return new Date(t).toLocaleString("zh-CN");
+    if (!t) return "Never";
+    return new Date(t).toLocaleString("en-US");
   };
 
   const sourceTypeLabel = (t: string) => {
     const labels: Record<string, string> = {
-      file: "文件",
-      url: "网址",
-      manual: "手动",
+      file: "File",
+      url: "URL",
+      manual: "Manual",
       api: "API",
     };
     return labels[t] || t;
@@ -98,9 +98,9 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-muted-foreground mt-1">
-          知识图谱系统概览
+          Overview of your knowledge base.
         </p>
       </div>
 
@@ -109,13 +109,13 @@ export default function DashboardPage() {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="快速搜索知识库..."
+            placeholder="Quick search..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-9"
           />
         </div>
-        <Button type="submit">搜索</Button>
+        <Button type="submit">Search</Button>
       </form>
 
       {/* Stats cards */}
@@ -138,7 +138,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  文档总数
+                  Documents
                 </CardTitle>
                 <FileText className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
@@ -150,7 +150,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  知识块总数
+                  Knowledge chunks
                 </CardTitle>
                 <Grid3X3 className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
@@ -162,7 +162,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  上次同步
+                  Last sync
                 </CardTitle>
                 <Clock className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
@@ -176,7 +176,7 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  同步状态
+                  Sync status
                 </CardTitle>
                 <Activity className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
@@ -193,13 +193,13 @@ export default function DashboardPage() {
       {/* Recent documents */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>最近文档</CardTitle>
+          <CardTitle>Recent documents</CardTitle>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => router.push("/documents")}
           >
-            查看全部
+            View all
             <ArrowRight className="ml-1 h-4 w-4" />
           </Button>
         </CardHeader>
@@ -212,7 +212,7 @@ export default function DashboardPage() {
             </div>
           ) : recentDocs.length === 0 ? (
             <p className="text-muted-foreground text-sm text-center py-4">
-              暂无文档
+              No documents yet
             </p>
           ) : (
             <div className="space-y-2">
@@ -228,7 +228,7 @@ export default function DashboardPage() {
                       <p className="text-sm font-medium truncate">{doc.title}</p>
                       <p className="text-xs text-muted-foreground">
                         {sourceTypeLabel(doc.source_type)} ·{" "}
-                        {new Date(doc.created_at).toLocaleString("zh-CN")}
+                        {new Date(doc.created_at).toLocaleString("en-US")}
                       </p>
                     </div>
                   </div>

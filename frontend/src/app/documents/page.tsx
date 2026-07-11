@@ -22,10 +22,10 @@ import {
 import { CreateNoteDialog } from "@/components/create-note-dialog";
 
 const sourceTypes = [
-  { value: "all", label: "全部类型" },
-  { value: "file", label: "文件" },
-  { value: "url", label: "网址" },
-  { value: "manual", label: "手动" },
+  { value: "all", label: "All types" },
+  { value: "file", label: "File" },
+  { value: "url", label: "URL" },
+  { value: "manual", label: "Manual" },
   { value: "api", label: "API" },
 ];
 
@@ -79,7 +79,7 @@ export default function DocumentsPage() {
   const totalPages = Math.ceil(total / pageSize);
 
   const sourceLabel = (t: string) => {
-    const labels: Record<string, string> = { file: "文件", url: "网址", manual: "手动", api: "API" };
+    const labels: Record<string, string> = { file: "File", url: "URL", manual: "Manual", api: "API" };
     return labels[t] || t;
   };
 
@@ -87,8 +87,8 @@ export default function DocumentsPage() {
     <div className="space-y-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">文档管理</h1>
-          <p className="text-muted-foreground mt-1">浏览、编辑和管理所有知识文档</p>
+          <h1 className="text-2xl font-bold tracking-tight">Documents</h1>
+          <p className="text-muted-foreground mt-1">Browse, edit, and manage your knowledge documents.</p>
         </div>
         <CreateNoteDialog onCreated={loadDocuments} />
       </div>
@@ -100,7 +100,7 @@ export default function DocumentsPage() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="搜索文档标题..."
+                placeholder="Search document titles..."
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                 className="pl-9"
@@ -108,7 +108,7 @@ export default function DocumentsPage() {
             </div>
             <Select value={sourceType} onValueChange={(v) => { setSourceType(v || "all"); setPage(1); }}>
               <SelectTrigger className="w-full md:w-40">
-                <SelectValue placeholder="文档类型" />
+                <SelectValue placeholder="Document type" />
               </SelectTrigger>
               <SelectContent>
                 {sourceTypes.map((st) => (
@@ -119,7 +119,7 @@ export default function DocumentsPage() {
             <div className="flex gap-2 items-center">
               <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
               <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} className="w-full md:w-auto" />
-              <span className="text-muted-foreground">至</span>
+              <span className="text-muted-foreground">to</span>
               <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} className="w-full md:w-auto" />
             </div>
           </div>
@@ -130,8 +130,8 @@ export default function DocumentsPage() {
       <Card>
         <CardHeader>
           <CardTitle>
-            文档列表
-            <span className="text-sm text-muted-foreground font-normal ml-2">共 {total} 篇</span>
+            Document list
+            <span className="text-sm text-muted-foreground font-normal ml-2">{total} total</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -140,7 +140,7 @@ export default function DocumentsPage() {
               {[...Array(10)].map((_, i) => (<Skeleton key={i} className="h-16 w-full" />))}
             </div>
           ) : documents.length === 0 ? (
-            <p className="text-muted-foreground text-sm text-center py-8">暂无文档</p>
+            <p className="text-muted-foreground text-sm text-center py-8">No documents yet</p>
           ) : (
             <div className="space-y-1">
               {documents.map((doc) => (
@@ -158,7 +158,7 @@ export default function DocumentsPage() {
                       <div className="flex items-center gap-2 mt-1">
                         <Badge variant="outline" className="text-xs">{sourceLabel(doc.source_type)}</Badge>
                         <span className="text-xs text-muted-foreground">
-                          {new Date(doc.created_at).toLocaleString("zh-CN")}
+                          {new Date(doc.created_at).toLocaleString("en-US")}
                         </span>
                       </div>
                     </div>
@@ -174,18 +174,18 @@ export default function DocumentsPage() {
                         <Button size="sm" variant="destructive"
                           onClick={(event) => { event.stopPropagation(); void handleDelete(doc.id); }}
                           disabled={deleting === doc.id}>
-                          {deleting === doc.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "确认"}
+                          {deleting === doc.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
                         </Button>
                         <Button size="sm" variant="ghost"
                           onClick={(event) => { event.stopPropagation(); setConfirmDelete(null); }}>
-                          取消
+                          Cancel
                         </Button>
                       </div>
                     ) : (
                       <Button size="icon" variant="ghost"
                         className="h-8 w-8 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"
                         onClick={(e) => { e.stopPropagation(); setConfirmDelete(doc.id); }}
-                        title="删除">
+                        title="Delete">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
@@ -198,13 +198,13 @@ export default function DocumentsPage() {
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-between pt-4 mt-4 border-t">
-              <p className="text-sm text-muted-foreground">第 {page} / {totalPages} 页</p>
+              <p className="text-sm text-muted-foreground">Page {page} of {totalPages}</p>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-                  <ChevronLeft className="h-4 w-4 mr-1" />上一页
+                  <ChevronLeft className="h-4 w-4 mr-1" />Previous
                 </Button>
                 <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-                  下一页<ChevronRight className="h-4 w-4 ml-1" />
+                  Next<ChevronRight className="h-4 w-4 ml-1" />
                 </Button>
               </div>
             </div>

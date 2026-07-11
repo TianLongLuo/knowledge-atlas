@@ -119,6 +119,8 @@ class AgentStatusResponse(BaseModel):
     """Non-sensitive readiness details for the AI assistant."""
 
     deepseek_configured: bool
+    deepseek_available: bool
+    deepseek_error: str | None = None
     vector_store_available: bool
     vector_document_count: int = 0
     model: str

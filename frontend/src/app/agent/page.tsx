@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { askAgent, getAgentStatus, AgentResponse, AgentCitation, AgentStatus } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,7 @@ export default function AgentPage() {
   // If coming from document detail, pre-fill with context
   useEffect(() => {
     if (docId) {
-      setInput(`请分析这篇文档 (${docId})`);
+      setInput(`Analyze this document (${docId})`);
     }
   }, [docId]);
 
@@ -73,10 +73,10 @@ export default function AgentPage() {
         },
       ]);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "请求失败";
+      const message = err instanceof Error ? err.message : "Request failed";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `❌ ${message}` },
+        { role: "assistant", content: `Error: ${message}` },
       ]);
     } finally {
       setLoading(false);
@@ -93,19 +93,20 @@ export default function AgentPage() {
   return (
     <div className="max-w-4xl mx-auto h-[calc(100vh-6rem)] flex flex-col">
       <div className="mb-4">
-        <h1 className="text-2xl font-bold tracking-tight">AI 助手</h1>
+        <h1 className="text-2xl font-bold tracking-tight">AI Assistant</h1>
         <p className="text-muted-foreground mt-1">
-          向 AI 提问，获取基于知识库的智能回答
+          Ask questions and get answers grounded in your knowledge base.
         </p>
         {status && (
-          <p className={`mt-2 text-xs ${status.deepseek_configured && status.vector_store_available ? "text-emerald-700" : "text-amber-700"}`}>
-            {status.deepseek_configured ? "DeepSeek 已配置" : "DeepSeek 尚未配置"} · {status.vector_store_available ? `已连接向量知识库（${status.vector_document_count} 条向量）` : "向量知识库为空或不可用"}
+          <p className={`mt-2 text-xs ${status.deepseek_available && status.vector_store_available ? "text-emerald-700" : "text-amber-700"}`}>
+            DeepSeek {status.deepseek_available ? "connected" : status.deepseek_configured ? "configured but unreachable" : "not configured"} · {status.vector_store_available ? `Vector store ready (${status.vector_document_count} vectors)` : "Vector store empty or unavailable"}
+            {status.deepseek_error ? ` · ${status.deepseek_error}` : ""}
           </p>
         )}
         {docId && (
           <Badge variant="secondary" className="mt-2">
             <FileText className="h-3 w-3 mr-1" />
-            基于文档提问模式
+            Document-scoped mode
           </Badge>
         )}
       </div>
@@ -118,9 +119,9 @@ export default function AgentPage() {
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center py-12">
                 <Bot className="h-12 w-12 text-muted-foreground/30 mb-4" />
-                <p className="text-muted-foreground">开始与 AI 助手对话</p>
+                <p className="text-muted-foreground">Start a conversation</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  基于知识库内容提问，获取精准回答
+                  Ask from the knowledge base and review cited sources.
                 </p>
               </div>
             ) : (
@@ -140,7 +141,7 @@ export default function AgentPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-muted-foreground mb-1">
-                        {msg.role === "user" ? "你" : "AI 助手"}
+                        {msg.role === "user" ? "You" : "AI Assistant"}
                       </p>
                       <div className="text-sm whitespace-pre-wrap leading-relaxed">
                         {msg.content}
@@ -150,7 +151,7 @@ export default function AgentPage() {
                       {msg.citations && msg.citations.length > 0 && (
                         <div className="mt-3 p-3 rounded-lg bg-accent/50 border border-border">
                           <p className="text-xs font-medium text-muted-foreground mb-2">
-                            参考来源:
+                            Sources
                           </p>
                           <div className="space-y-2">
                             {msg.citations.map((cite, ci) => (
@@ -173,7 +174,7 @@ export default function AgentPage() {
                                     variant="outline"
                                     className="text-[10px] mt-1"
                                   >
-                                    相关度: {(cite.relevance_score * 100).toFixed(0)}%
+                                    Relevance: {(cite.relevance_score * 100).toFixed(0)}%
                                   </Badge>
                                 </div>
                               </button>
@@ -192,7 +193,7 @@ export default function AgentPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">思考中...</span>
+                      <span className="text-sm text-muted-foreground">Thinking...</span>
                     </div>
                   </div>
                 )}
@@ -203,7 +204,7 @@ export default function AgentPage() {
           {/* Input */}
           <div className="flex gap-2 pt-4 border-t mt-4">
             <Input
-              placeholder="输入你的问题..."
+              placeholder="Ask a question..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}

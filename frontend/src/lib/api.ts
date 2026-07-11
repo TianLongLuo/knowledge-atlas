@@ -12,11 +12,11 @@ export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): 
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.assign("/login");
     }
-    throw new Error("登录已过期，请重新登录");
+    throw new Error("Your session expired. Please sign in again.");
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(payload.detail || `请求失败 (${response.status})`);
+    throw new Error(payload.detail || `Request failed (${response.status})`);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -157,7 +157,14 @@ export interface AgentCitation {
   document_id: string; document_title: string; content: string; relevance_score: number; source_url?: string | null;
 }
 export interface AgentResponse { question: string; answer: string; citations: AgentCitation[]; session_id: string }
-export interface AgentStatus { deepseek_configured: boolean; vector_store_available: boolean; vector_document_count: number; model: string }
+export interface AgentStatus {
+  deepseek_configured: boolean;
+  deepseek_available: boolean;
+  deepseek_error?: string | null;
+  vector_store_available: boolean;
+  vector_document_count: number;
+  model: string;
+}
 export function getAgentStatus() { return apiFetch<AgentStatus>("/agent/status"); }
 export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
   const raw = await apiFetch<{ question: string; answer: string; session_id: string; citations: Array<{

@@ -18,7 +18,6 @@ import {
   RefreshCw,
   CheckCircle,
   XCircle,
-  Clock,
   AlertCircle,
   Loader2,
   Play,
@@ -61,14 +60,14 @@ export default function SyncPage() {
     setMessage("");
     try {
       const result = await startSync();
-      setMessage(result.message || "同步已启动");
+      setMessage(result.message || "Sync started");
       // Refresh status
       const newStatus = await getSyncStatus();
       setStatus(newStatus);
       const newHistory = await getSyncHistory();
       setHistory(newHistory);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "启动同步失败";
+      const msg = err instanceof Error ? err.message : "Failed to start sync";
       setMessage(msg);
     } finally {
       setSyncLoading(false);
@@ -81,21 +80,21 @@ export default function SyncPage() {
         return (
           <Badge variant="secondary">
             <CheckCircle className="h-3 w-3 mr-1" />
-            空闲
+            Idle
           </Badge>
         );
       case "syncing":
         return (
           <Badge>
             <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            同步中
+            Syncing
           </Badge>
         );
       case "error":
         return (
           <Badge variant="destructive">
             <XCircle className="h-3 w-3 mr-1" />
-            错误
+            Error
           </Badge>
         );
       default:
@@ -109,21 +108,21 @@ export default function SyncPage() {
         return (
           <Badge variant="secondary" className="text-xs">
             <CheckCircle className="h-3 w-3 mr-1" />
-            已完成
+            Completed
           </Badge>
         );
       case "failed":
         return (
           <Badge variant="destructive" className="text-xs">
             <XCircle className="h-3 w-3 mr-1" />
-            失败
+            Failed
           </Badge>
         );
       case "in_progress":
         return (
           <Badge className="text-xs">
             <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            进行中
+            In progress
           </Badge>
         );
       default:
@@ -134,9 +133,9 @@ export default function SyncPage() {
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">数据同步</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Data Sync</h1>
         <p className="text-muted-foreground mt-1">
-          管理和监控知识库数据同步状态
+          Manage and monitor knowledge-base synchronization.
         </p>
       </div>
 
@@ -146,7 +145,7 @@ export default function SyncPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <RefreshCw className="h-5 w-5" />
-              同步状态
+              Sync status
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -159,26 +158,26 @@ export default function SyncPage() {
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <div>
-                  <p className="text-xs text-muted-foreground">当前状态</p>
+                  <p className="text-xs text-muted-foreground">Current status</p>
                   <div className="mt-1">{statusBadge(status?.status || "idle")}</div>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">上次同步</p>
+                  <p className="text-xs text-muted-foreground">Last sync</p>
                   <p className="text-sm font-medium mt-1">
                     {status?.last_sync_time
-                      ? new Date(status.last_sync_time).toLocaleString("zh-CN")
-                      : "从未"}
+                      ? new Date(status.last_sync_time).toLocaleString("en-US")
+                      : "Never"}
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">已同步文档</p>
+                  <p className="text-xs text-muted-foreground">Synced documents</p>
                   <p className="text-sm font-medium mt-1">
-                    {status?.total_synced ?? 0} 篇
+                    {status?.total_synced ?? 0}
                   </p>
                 </div>
                 {status?.errors !== undefined && status.errors > 0 && (
                   <div>
-                    <p className="text-xs text-muted-foreground">错误数</p>
+                    <p className="text-xs text-muted-foreground">Errors</p>
                     <p className="text-sm font-medium mt-1 text-destructive">
                       {status.errors}
                     </p>
@@ -191,7 +190,7 @@ export default function SyncPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">同步操作</CardTitle>
+            <CardTitle className="text-sm">Sync action</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <Button
@@ -202,12 +201,12 @@ export default function SyncPage() {
               {syncLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  启动中...
+                  Starting...
                 </>
               ) : (
                 <>
                   <Play className="mr-2 h-4 w-4" />
-                  开始同步
+                  Start sync
                 </>
               )}
             </Button>
@@ -215,7 +214,7 @@ export default function SyncPage() {
             {status?.sync_in_progress && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                同步进行中...
+                Sync in progress...
               </div>
             )}
 
@@ -231,9 +230,9 @@ export default function SyncPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <History className="h-5 w-5" />
-            同步历史
+            Sync history
           </CardTitle>
-          <CardDescription>最近的同步记录</CardDescription>
+          <CardDescription>Recent sync records</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -244,7 +243,7 @@ export default function SyncPage() {
             </div>
           ) : history.length === 0 ? (
             <p className="text-muted-foreground text-sm text-center py-4">
-              暂无同步记录
+              No sync records yet
             </p>
           ) : (
             <ScrollArea className="h-[400px]">
@@ -257,23 +256,23 @@ export default function SyncPage() {
                         {syncHistoryStatusBadge(item.status)}
                         <div>
                           <p className="text-sm">
-                            处理了{" "}
+                            Processed{" "}
                             <span className="font-medium">
                               {item.documents_processed}
                             </span>{" "}
-                            篇文档
+                            documents
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {new Date(item.started_at).toLocaleString("zh-CN")}
+                            {new Date(item.started_at).toLocaleString("en-US")}
                             {item.completed_at &&
-                              ` · 完成于 ${new Date(item.completed_at).toLocaleString("zh-CN")}`}
+                              ` · completed at ${new Date(item.completed_at).toLocaleString("en-US")}`}
                           </p>
                         </div>
                       </div>
                       {item.errors > 0 && (
                         <div className="flex items-center gap-1 text-destructive text-sm">
                           <AlertCircle className="h-4 w-4" />
-                          {item.errors} 个错误
+                          {item.errors} errors
                         </div>
                       )}
                     </div>

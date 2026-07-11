@@ -1,17 +1,20 @@
 # Knowledge Atlas
 
-面向 Linux 服务器的个人知识管理平台：Notion 增量同步、PostgreSQL 文档库、Chroma HNSW 向量检索、RAG 问答和交互式 3D 语义图谱。
+A private knowledge-management app for a Linux server: Notion incremental sync, PostgreSQL document storage, Chroma HNSW vector retrieval, DeepSeek-powered RAG answers, and a readable 2D knowledge map.
 
-## 本次工程基线
+## Current Logic
 
-- Graph 后端通过 Chroma ANN Top‑K 建边，不再做全量 `O(n²)` 余弦比较。
-- Graph 前端采用空间哈希近邻力、单批次 `LineSegments`、共享几何/材质、稳定节点 ID、局部一层图、节点搜索和完整 WebGL 资源回收。
-- 登录使用 `HttpOnly` Cookie；生产环境拒绝默认密钥、默认数据库密码和未配置管理员密码。
-- CORS 只接受显式来源；提供存活 `/api/health` 与依赖就绪 `/api/ready` 探针。
-- 前后端文档、搜索、AI、同步和仪表盘契约已经统一。
-- 提供 Docker Compose、非 root 镜像、健康检查和 GitHub Actions。
+- Documents are stored in PostgreSQL and split into chunks for search and citation.
+- Chroma stores embeddings for those chunks. Search and the AI assistant both retrieve from this existing vector database.
+- The AI assistant first retrieves relevant chunks, then sends only that context plus the user question to DeepSeek. Answers include citations back to local documents.
+- The agent status endpoint checks three things separately: whether DeepSeek is configured, whether DeepSeek is reachable, and whether the vector store contains vectors.
+- The knowledge map uses Chroma ANN Top-K edges from the backend, then renders a 2D SVG cluster map by topic. It avoids permanent dense labels and shows details in a side panel.
+- Authentication uses `HttpOnly` cookies. Production rejects default secrets, default database passwords, and missing admin password hashes.
+- CORS accepts only explicit origins. `/api/health` and `/api/ready` are available for uptime and dependency checks.
 
-## Docker 部署
+## Docker Deployment
+
+Create the server environment file:
 
 ```bash
 cp .env.example .env
@@ -19,35 +22,57 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 python -c "import bcrypt, getpass; p=getpass.getpass().encode(); print(bcrypt.hashpw(p, bcrypt.gensalt()).decode())"
 ```
 
-把两条命令的结果分别填入 `.env` 的 `SECRET_KEY` 和 `ADMIN_PASSWORD_HASH`；bcrypt hash 含有 `$`，请保留 `ADMIN_PASSWORD_HASH='...'` 的单引号。再设置强随机 `POSTGRES_PASSWORD`、Notion 和 DeepSeek 配置，然后启动：
+Put the first command output in `SECRET_KEY`. Put the bcrypt output in `ADMIN_PASSWORD_HASH`; keep quotes around the value because bcrypt hashes contain `$`.
+
+Set a strong `POSTGRES_PASSWORD`, Notion settings if you use Notion sync, and the DeepSeek settings below. Then start the stack:
 
 ```bash
 docker compose up --build -d
 docker compose ps
 ```
 
-默认入口是 `http://服务器地址:3000`。公网部署时应在前面放置 Caddy 或 Nginx、启用 HTTPS，把 `CORS_ORIGINS` 改为真实 HTTPS 域名，并设置 `SESSION_COOKIE_SECURE=true`。
+The default app URL is `http://YOUR_SERVER:3000`. For public deployment, put Caddy or Nginx in front, enable HTTPS, set `CORS_ORIGINS` to the real HTTPS origin, and set `SESSION_COOKIE_SECURE=true`.
 
-配置了 `NOTION_API_KEY` 和 `NOTION_DATABASE_ID` 后，服务会在启动时同步一次，并按 `NOTION_AUTO_SYNC_INTERVAL_MINUTES`（默认 60 分钟）持续增量同步；无需在网页里手动点击。
+If `NOTION_API_KEY` and `NOTION_DATABASE_ID` are configured, the backend syncs once at startup and then syncs incrementally every `NOTION_AUTO_SYNC_INTERVAL_MINUTES` minutes.
 
-### DeepSeek 与现有向量知识库
+## DeepSeek And Vector RAG
 
-在服务器根目录的 `.env` 中填写**新生成的** DeepSeek 密钥（不要提交到 Git）：
+Create a new DeepSeek key and put it in the server `.env`. Do not commit it to Git.
 
 ```dotenv
-DEEPSEEK_API_KEY=新生成的密钥
+DEEPSEEK_API_KEY=your_new_deepseek_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_TIMEOUT_SECONDS=45
-# 必须与当前 Chroma 数据库建立索引时使用的模型一致；否则请重新索引。
+
+# Must match the embedding model used when the current Chroma database was indexed.
+# If you change it, re-index the knowledge base.
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 ```
 
-更新后执行 `docker compose up -d --build backend`。登录后打开 AI 助手，页面会显示 DeepSeek 和 Chroma 向量库的非敏感连接状态；密钥、完整请求和模型响应不会被该状态接口返回。
+Apply the change:
 
-## 本地开发
+```bash
+docker compose up -d --build backend
+```
 
-后端：
+Then sign in and open `AI Assistant`. The status line should say:
+
+- `DeepSeek connected` when the key, base URL, model, and outbound network are working.
+- `configured but unreachable` when the key exists but the backend cannot reach DeepSeek.
+- `Vector store ready (N vectors)` when Chroma has indexed knowledge chunks.
+
+If the assistant still fails, check backend logs:
+
+```bash
+docker compose logs --tail=200 backend
+```
+
+Most failures are one of: expired key, wrong `DEEPSEEK_BASE_URL`, wrong `DEEPSEEK_MODEL`, server egress blocked, or a backend container that was not rebuilt after editing `.env`.
+
+## Local Development
+
+Backend:
 
 ```bash
 cd backend
@@ -58,7 +83,7 @@ pip install -r requirements-dev.txt
 uvicorn main:app --reload
 ```
 
-前端：
+Frontend:
 
 ```bash
 cd frontend
@@ -66,11 +91,11 @@ npm ci
 npm run dev
 ```
 
-## 验证
+## Verification
 
 ```bash
 cd backend && pytest -q
 cd frontend && npm run lint && npm run build
 ```
 
-生产数据库结构后续应通过 Alembic migration 管理；`create_all` 仅保留用于当前首次启动兼容。
+Production database migrations should later be managed with Alembic. `create_all` remains only for first-start compatibility in the current deployment.

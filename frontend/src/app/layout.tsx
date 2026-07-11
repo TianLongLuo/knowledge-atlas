@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "知识图谱 - Knowledge Atlas",
-  description: "企业级知识图谱管理与智能搜索平台",
+  title: "Knowledge Atlas",
+  description: "A private knowledge base with search, graph exploration, and AI answers.",
 };
 
 export default function RootLayout({
@@ -25,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="zh-CN"
+      lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >

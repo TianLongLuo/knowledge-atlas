@@ -28,7 +28,7 @@ export default function LoginPage() {
       await checkAuth();
       router.push("/");
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "登录失败，请重试";
+      const message = err instanceof Error ? err.message : "Sign-in failed. Please try again.";
       setError(message);
     } finally {
       setLoading(false);
@@ -42,19 +42,19 @@ export default function LoginPage() {
           <div className="mx-auto flex items-center justify-center w-12 h-12 rounded-full bg-primary/10">
             <BookOpen className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-2xl font-bold">知识图谱</CardTitle>
+          <CardTitle className="text-2xl font-bold">Knowledge Atlas</CardTitle>
           <CardDescription>
-            登录您的账户以访问知识管理系统
+            Sign in to access your private knowledge base.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">用户名</Label>
+              <Label htmlFor="username">Username</Label>
               <Input
                 id="username"
                 type="text"
-                placeholder="请输入用户名"
+                placeholder="Enter your username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
@@ -62,11 +62,11 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
+              <Label htmlFor="password">Password</Label>
               <Input
                 id="password"
                 type="password"
-                placeholder="请输入密码"
+                placeholder="Enter your password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -84,10 +84,10 @@ export default function LoginPage() {
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  登录中...
+                  Signing in...
                 </>
               ) : (
-                "登录"
+                "Sign in"
               )}
             </Button>
           </form>

@@ -20,12 +20,12 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
-  { href: "/", label: "仪表盘", icon: LayoutDashboard },
-  { href: "/documents", label: "文档管理", icon: FileText },
-  { href: "/search", label: "知识搜索", icon: Search },
-  { href: "/graph", label: "知识网络", icon: Share2 },
-  { href: "/agent", label: "AI 助手", icon: Bot },
-  { href: "/sync", label: "数据同步", icon: RefreshCw },
+  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/search", label: "Search", icon: Search },
+  { href: "/graph", label: "Knowledge Map", icon: Share2 },
+  { href: "/agent", label: "AI Assistant", icon: Bot },
+  { href: "/sync", label: "Sync", icon: RefreshCw },
 ];
 
 export function Sidebar() {
@@ -42,7 +42,7 @@ export function Sidebar() {
       <div className="flex items-center gap-2 px-4 py-5 border-b border-sidebar-border">
         <BookOpen className="h-6 w-6 text-primary" />
         <span className="font-semibold text-lg text-sidebar-foreground">
-          知识图谱
+          Knowledge Atlas
         </span>
       </div>
 
@@ -78,7 +78,7 @@ export function Sidebar() {
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors w-full"
         >
           <LogOut className="h-5 w-5 shrink-0" />
-          <span>退出登录</span>
+          <span>Sign out</span>
         </button>
       </div>
     </div>
