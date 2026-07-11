@@ -126,6 +126,19 @@ class AgentStatusResponse(BaseModel):
     model: str
 
 
+class MemoryLevelStatus(BaseModel):
+    level: str
+    title: str
+    count: int
+    description: str
+
+
+class AgentMemoryStatusResponse(BaseModel):
+    session_id: str | None = None
+    levels: list[MemoryLevelStatus]
+    vector_count: int = 0
+
+
 # ── Sync ────────────────────────────────────────────────────────────
 
 

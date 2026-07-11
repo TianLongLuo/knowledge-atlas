@@ -26,11 +26,16 @@ interface LayoutNode extends GraphNode { x: number; y: number }
 
 const WIDTH = 1180;
 const HEIGHT = 680;
+const TYPE_COLORS = ["#7c3aed", "#2563eb", "#db2777", "#059669", "#d97706", "#0891b2"];
 
 function stableJitter(id: string) {
   let hash = 2166136261;
   for (let i = 0; i < id.length; i += 1) hash = Math.imul(hash ^ id.charCodeAt(i), 16777619);
   return ((hash >>> 0) % 1000) / 1000;
+}
+
+function nodeType(node: GraphNode) {
+  return node.source || "note";
 }
 
 export default function GraphPage() {
@@ -42,6 +47,7 @@ export default function GraphPage() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [minSimilarity, setMinSimilarity] = useState(0.5);
   const [query, setQuery] = useState("");
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
   const [readerOpen, setReaderOpen] = useState(false);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerDocument, setReaderDocument] = useState<DocumentDetail | null>(null);
@@ -86,28 +92,68 @@ export default function GraphPage() {
 
   const visibleData = useMemo(() => {
     if (!data) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
-    const allowed = new Set(data.nodes.filter((node) => node.degree > 0).map((node) => node.id));
+    const allowed = new Set(data.nodes
+      .filter((node) => node.degree > 0 && !hiddenTypes.has(nodeType(node)))
+      .map((node) => node.id));
     return {
       nodes: data.nodes.filter((node) => allowed.has(node.id)),
       edges: data.edges.filter((edge) => allowed.has(edge.source) && allowed.has(edge.target)),
     };
+  }, [data, hiddenTypes]);
+
+  const typeStats = useMemo(() => {
+    const counts = new Map<string, number>();
+    data?.nodes.forEach((node) => counts.set(nodeType(node), (counts.get(nodeType(node)) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
   }, [data]);
+  const typeColor = (type: string) => TYPE_COLORS[Math.max(0, typeStats.findIndex(([name]) => name === type)) % TYPE_COLORS.length];
 
   const layout = useMemo(() => {
     const sorted = [...visibleData.nodes].sort((a, b) => b.degree - a.degree || b.size - a.size);
     const nodes: LayoutNode[] = sorted.map((node, index) => {
       const angle = index * 2.399963 + stableJitter(node.id) * 0.45;
-      const radius = 34 + Math.sqrt(index) * 47;
+      const radius = 35 + Math.sqrt(index) * 38;
       return {
         ...node,
-        x: WIDTH / 2 + Math.cos(angle) * Math.min(radius * 1.45, WIDTH * 0.43),
-        y: HEIGHT / 2 + Math.sin(angle) * Math.min(radius, HEIGHT * 0.42),
+        x: WIDTH / 2 + Math.cos(angle) * radius * 1.35,
+        y: HEIGHT / 2 + Math.sin(angle) * radius,
       };
     });
-
+    const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+    for (let iteration = 0; iteration < 90; iteration += 1) {
+      const force = nodes.map(() => ({ x: 0, y: 0 }));
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const dx = nodes[j].x - nodes[i].x || 0.01;
+          const dy = nodes[j].y - nodes[i].y || 0.01;
+          const distance2 = Math.max(100, dx * dx + dy * dy);
+          const strength = 1900 / distance2;
+          force[i].x -= dx * strength; force[i].y -= dy * strength;
+          force[j].x += dx * strength; force[j].y += dy * strength;
+        }
+      }
+      visibleData.edges.forEach((edge) => {
+        const sourceIndex = indexById.get(edge.source);
+        const targetIndex = indexById.get(edge.target);
+        if (sourceIndex === undefined || targetIndex === undefined) return;
+        const dx = nodes[targetIndex].x - nodes[sourceIndex].x;
+        const dy = nodes[targetIndex].y - nodes[sourceIndex].y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const pull = (distance - (125 - edge.weight * 45)) * 0.008;
+        force[sourceIndex].x += dx / distance * pull; force[sourceIndex].y += dy / distance * pull;
+        force[targetIndex].x -= dx / distance * pull; force[targetIndex].y -= dy / distance * pull;
+      });
+      const cooling = 1 - iteration / 110;
+      nodes.forEach((node, index) => {
+        force[index].x += (WIDTH / 2 - node.x) * 0.002;
+        force[index].y += (HEIGHT / 2 - node.y) * 0.002;
+        node.x = Math.max(24, Math.min(WIDTH - 24, node.x + force[index].x * cooling));
+        node.y = Math.max(24, Math.min(HEIGHT - 24, node.y + force[index].y * cooling));
+      });
+    }
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
     return { nodes, nodeMap };
-  }, [visibleData.nodes]);
+  }, [visibleData.nodes, visibleData.edges]);
 
   const selected = selectedId ? layout.nodeMap.get(selectedId) || null : null;
   const hovered = hoveredId ? layout.nodeMap.get(hoveredId) || null : null;
@@ -156,6 +202,21 @@ export default function GraphPage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Types · {data?.stats.node_count || 0} total</span>
+        {typeStats.map(([type, count]) => {
+          const hidden = hiddenTypes.has(type);
+          return (
+            <button key={type} onClick={() => setHiddenTypes((current) => {
+              const next = new Set(current); if (next.has(type)) next.delete(type); else next.add(type); return next;
+            })} className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${hidden ? "opacity-40" : "bg-card"}`}>
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: typeColor(type) }} />
+              {type} <span className="text-muted-foreground">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="relative overflow-hidden rounded-lg border border-border bg-white">
           {loading && <div className="absolute inset-0 z-10 grid place-items-center bg-white/80 text-sm text-muted-foreground">Building map...</div>}
@@ -172,10 +233,11 @@ export default function GraphPage() {
               const source = layout.nodeMap.get(edge.source);
               const target = layout.nodeMap.get(edge.target);
               if (!source || !target) return null;
-              if (!connectedEdgeKeys.has(`${edge.source}:${edge.target}`)) return null;
+              const active = connectedEdgeKeys.has(`${edge.source}:${edge.target}`);
+              if (focused && !active) return null;
               return (
                 <line key={`${edge.source}:${edge.target}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y}
-                  stroke="#2563eb" strokeWidth={Math.max(1.2, edge.weight * 2.4)} strokeOpacity="0.5" />
+                  stroke={active ? "#2563eb" : "#94a3b8"} strokeWidth={active ? Math.max(1.2, edge.weight * 2.4) : 0.7} strokeOpacity={active ? 0.65 : 0.12} />
               );
             })}
             {layout.nodes.map((node) => {
@@ -188,7 +250,7 @@ export default function GraphPage() {
                   onClick={() => setSelectedId(node.id)}
                   className="cursor-pointer">
                   <circle cx={node.x} cy={node.y} r={radius + (active ? 7 : 3)} fill="white" opacity={muted ? 0.45 : 1} />
-                  <circle cx={node.x} cy={node.y} r={radius} fill={active ? "#2563eb" : connectedToSelected ? "#8b5cf6" : "#94a3b8"} opacity={muted ? 0.2 : 0.9} filter={active ? "url(#softShadow)" : undefined} />
+                  <circle cx={node.x} cy={node.y} r={radius} fill={active ? "#2563eb" : connectedToSelected ? "#8b5cf6" : typeColor(nodeType(node))} opacity={muted ? 0.2 : 0.88} filter={active ? "url(#softShadow)" : undefined} />
                   {active && <circle cx={node.x} cy={node.y} r={radius + 7} fill="none" stroke="#2563eb" strokeWidth="2.5" />}
                 </g>
               );

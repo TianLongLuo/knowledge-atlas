@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { askAgent, getAgentStatus, AgentResponse, AgentCitation, AgentStatus } from "@/lib/api";
+import { askAgent, getAgentMemoryStatus, getAgentStatus } from "@/lib/api";
+import type { AgentMemoryStatus, AgentResponse, AgentCitation, AgentStatus } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ export default function AgentPage() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<AgentStatus | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<AgentMemoryStatus | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // If coming from document detail, pre-fill with context
@@ -37,6 +39,7 @@ export default function AgentPage() {
 
   useEffect(() => {
     void getAgentStatus().then(setStatus).catch(() => setStatus(null));
+    void getAgentMemoryStatus().then(setMemoryStatus).catch(() => setMemoryStatus(null));
   }, []);
 
   useEffect(() => {
@@ -63,6 +66,7 @@ export default function AgentPage() {
       if (!sessionId) {
         setSessionId(response.session_id);
       }
+      void getAgentMemoryStatus(response.session_id).then(setMemoryStatus).catch(() => undefined);
 
       setMessages((prev) => [
         ...prev,
@@ -91,7 +95,7 @@ export default function AgentPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto h-[calc(100vh-6rem)] flex flex-col">
+    <div className="max-w-5xl mx-auto min-h-[calc(100vh-6rem)] flex flex-col">
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight">AI Assistant</h1>
         <p className="text-muted-foreground mt-1">
@@ -108,6 +112,19 @@ export default function AgentPage() {
             <FileText className="h-3 w-3 mr-1" />
             Document-scoped mode
           </Badge>
+        )}
+        {memoryStatus && (
+          <div className="mt-4 grid gap-2 md:grid-cols-4">
+            {memoryStatus.levels.map((level) => (
+              <div key={level.level} className="rounded-lg border border-border bg-card/70 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold"><span className="mr-1 text-blue-600">{level.level}</span>{level.title}</p>
+                  <Badge variant="outline">{level.count}</Badge>
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{level.description}</p>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

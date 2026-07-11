@@ -166,6 +166,12 @@ export interface AgentStatus {
   model: string;
 }
 export function getAgentStatus() { return apiFetch<AgentStatus>("/agent/status"); }
+export interface MemoryLevelStatus { level: string; title: string; count: number; description: string }
+export interface AgentMemoryStatus { session_id?: string | null; vector_count: number; levels: MemoryLevelStatus[] }
+export function getAgentMemoryStatus(sessionId?: string) {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return apiFetch<AgentMemoryStatus>(`/agent/memory/status${query}`);
+}
 export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
   const raw = await apiFetch<{ question: string; answer: string; session_id: string; citations: Array<{
     document_id: number; document_title: string; chunk_snippet: string; similarity_score: number; source_url?: string | null;

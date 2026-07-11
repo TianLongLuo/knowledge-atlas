@@ -7,8 +7,9 @@ A private knowledge-management app for a Linux server: Notion incremental sync, 
 - Documents are stored in PostgreSQL and split into chunks for search and citation.
 - Chroma stores embeddings for those chunks. Search and the AI assistant both retrieve from this existing vector database.
 - The AI assistant first retrieves relevant chunks, then sends only that context plus the user question to DeepSeek. Answers include citations back to local documents.
+- Assistant memory is inspectable: L0 stores raw conversation turns, L1 reports the real Chroma vector count, L2 stores the retrieved context used for each answer, and L3 is reserved for explicitly reviewed profile data. Recent L0 turns are included in the next DeepSeek request.
 - The agent status endpoint checks three things separately: whether DeepSeek is configured, whether DeepSeek is reachable, and whether the vector store contains vectors.
-- The knowledge map uses Chroma ANN Top-K edges from the backend, then renders a 2D SVG cluster map by topic. It avoids permanent dense labels and shows details in a side panel.
+- The knowledge map uses Chroma ANN Top-K edges and an Obsidian-style 2D force layout. Source-type pills show the type count and filter the graph; hovering reveals only the strongest links, and linked notes open in an in-page reader.
 - Authentication uses `HttpOnly` cookies. Production rejects default secrets, default database passwords, and missing admin password hashes.
 - CORS accepts only explicit origins. `/api/health` and `/api/ready` are available for uptime and dependency checks.
 

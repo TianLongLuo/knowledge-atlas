@@ -182,3 +182,22 @@ class SyncState(Base):
     __table_args__ = (
         UniqueConstraint("source_type", "source_id", name="uq_sync_state"),
     )
+
+
+# ── Agent Memory ────────────────────────────────────────────────────
+
+
+class AgentMemory(Base):
+    """Persistent, inspectable memory used by the RAG assistant."""
+
+    __tablename__ = "agent_memories"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_new_uuid)
+    session_id = Column(String(128), nullable=False, index=True)
+    level = Column(String(8), nullable=False, index=True)  # L0 dialogue, L1 retrieved knowledge
+    role = Column(String(32), nullable=False)
+    content = Column(Text, nullable=False)
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (Index("ix_agent_memory_session_level", "session_id", "level"),)
