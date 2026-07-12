@@ -95,7 +95,7 @@ class SearchResponse(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=8000)
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=100, ge=1, le=100)
     session_id: str | None = Field(default=None, max_length=128)
     document_id: int | None = None
     mode: Literal["knowledge", "reflection", "socratic"] = "knowledge"

@@ -7,7 +7,9 @@ from utils import (
     content_snippet, dominant_group, normalized_source_type, normalized_tags,
     content_fingerprint, legacy_document_key, merge_chunk_texts,
 )
-from schemas import SearchResult
+from schemas import AskRequest, SearchResult
+from pydantic import ValidationError
+import pytest
 
 
 # ── Auth tests ────────────────────────────────────────────────────
@@ -209,3 +211,21 @@ def test_search_result_schema_is_valid():
     assert r.document_id == 42
     assert r.similarity_score == 0.95
     assert r.title == "Test Document"
+
+
+def test_agent_allows_up_to_one_hundred_retrieval_candidates():
+    assert AskRequest(question="我是谁").top_k == 100
+    assert AskRequest(question="test", top_k=100).top_k == 100
+    with pytest.raises(ValidationError):
+        AskRequest(question="test", top_k=101)
+
+
+def test_graph_keeps_one_sided_threshold_qualified_links():
+    from routers.graph import _proposal_edges
+
+    proposals = {
+        ("a", "b"): {"weight": 0.61, "directions": {"a"}},
+        ("b", "c"): {"weight": 0.73, "directions": {"b", "c"}},
+    }
+    edges = _proposal_edges(proposals, max_edges=10)
+    assert [(edge.source, edge.target) for edge in edges] == [("b", "c"), ("a", "b")]

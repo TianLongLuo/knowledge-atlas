@@ -85,6 +85,18 @@ def _node_identity(chroma_id: str, metadata: dict, content: str = "") -> tuple[s
         return f"legacy:{logical_key}", _pseudo_id(logical_key)
 
 
+def _proposal_edges(proposals: dict[tuple[str, str], dict[str, object]], max_edges: int) -> list[GraphEdge]:
+    """Turn every threshold-qualified neighbour proposal into a bounded edge list."""
+    edges = [
+        GraphEdge(
+            source=pair[0], target=pair[1], weight=round(float(value["weight"]), 4),
+            label=f"semantic {float(value['weight']):.2f}",
+        )
+        for pair, value in proposals.items()
+    ]
+    return sorted(edges, key=lambda edge: edge.weight, reverse=True)[:max_edges]
+
+
 @router.get("/full", response_model=GraphResponse)
 async def get_full_graph(
     limit: int = Query(default=settings.graph_default_limit, ge=10, le=500),
@@ -216,17 +228,10 @@ async def get_full_graph(
                     if accepted >= neighbors:
                         break
 
-        # Mutual KNN removes one-sided/noisy similarities. Very strong edges
-        # survive even when only one endpoint selected the other.
-        edges = [
-            GraphEdge(
-                source=pair[0], target=pair[1], weight=round(float(value["weight"]), 4),
-                label=f"semantic {float(value['weight']):.2f}",
-            )
-            for pair, value in proposals.items()
-            if len(value["directions"]) >= 2 or float(value["weight"]) >= min(0.95, min_similarity + 0.12)
-        ]
-        edges = sorted(edges, key=lambda edge: edge.weight, reverse=True)[:max_edges]
+        # Keep every threshold-qualified Top-K proposal. Requiring mutual KNN
+        # made sparse or heterogeneous corpora return nodes with zero visible
+        # edges even though Chroma had valid semantic neighbours.
+        edges = _proposal_edges(proposals, max_edges)
         for edge in edges:
             nodes_by_id[edge.source].degree += 1
             nodes_by_id[edge.target].degree += 1

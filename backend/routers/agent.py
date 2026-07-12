@@ -106,7 +106,7 @@ async def multi_facet_retrieval(
             facet_results = await search_service.search(
                 query=facet_query,
                 search_type="vector",
-                top_k=10,
+                top_k=25,
                 document_id=document_id,
                 db=db,
             )
@@ -123,7 +123,7 @@ async def multi_facet_retrieval(
         direct_results = await search_service.search(
             query=question,
             search_type="vector",
-            top_k=10,
+            top_k=25,
             document_id=document_id,
             db=db,
         )
@@ -135,19 +135,19 @@ async def multi_facet_retrieval(
     except Exception:
         logger.exception("Direct search failed")
 
-    semantic_results = mmr_diversify(all_results, None, lambda_param=0.65, top_n=20)
+    semantic_results = mmr_diversify(all_results, None, lambda_param=0.65, top_n=60)
     selected_keys = {(item.document_id, item.chunk_id) for item in semantic_results}
 
     # Semantic retrieval alone can miss older Chinese legacy vectors that were
     # embedded with an English-first model. Add a bounded, source-diverse corpus
     # sample for broad self-analysis so the model sees the breadth of the user's
     # notebook instead of whichever single chunk happens to rank first.
-    for result in corpus_profile_sample(limit=18):
+    for result in corpus_profile_sample(limit=80):
         key = (result.document_id, result.chunk_id)
         if key not in selected_keys:
             selected_keys.add(key)
             semantic_results.append(result)
-        if len(semantic_results) >= 32:
+        if len(semantic_results) >= 100:
             break
 
     return semantic_results
@@ -447,13 +447,13 @@ async def ask_question(
             search_service, body.question, body.document_id, db
         )
         # Use larger pool
-        search_results = search_results[:25]
+        search_results = search_results[:100]
     elif body.document_id is not None:
         # Document-scoped: focused retrieval
         search_results = await search_service.search(
             query=retrieval_query,
             search_type="vector",
-            top_k=max(body.top_k, 10),
+            top_k=min(max(body.top_k, 100), 100),
             document_id=body.document_id,
             db=db,
         )
@@ -462,7 +462,7 @@ async def ask_question(
         search_results = await search_service.search(
             query=retrieval_query,
             search_type="hybrid",
-            top_k=max(body.top_k, 30),
+            top_k=min(max(body.top_k, 100), 100),
             document_id=body.document_id,
             db=db,
         )
@@ -482,19 +482,30 @@ async def ask_question(
     context_results: list[SearchResult] = []
     chunks_per_document: dict[int, int] = {}
     doc_index = 0
+    context_chars = 0
+    max_context_chars = 60_000
     for r in search_results:
-        per_document_limit = 10 if body.document_id is not None else (1 if broad_identity else 2)
+        per_document_limit = 100 if body.document_id is not None else 1
         if chunks_per_document.get(r.document_id, 0) >= per_document_limit:
             continue
         chunks_per_document[r.document_id] = chunks_per_document.get(r.document_id, 0) + 1
-        doc_index += 1
-        context_results.append(r)
-        context_parts.append(
-            f"[Doc {doc_index}] Title: {r.title}\n"
+        next_index = doc_index + 1
+        context_title = r.title[:140]
+        context_snippet = r.snippet[:360]
+        context_entry = (
+            f"[Doc {next_index}] Title: {context_title}\n"
             f"Source: {r.source}\n"
-            f"Content: {r.snippet}\n"
+            f"Content: {context_snippet}\n"
         )
-        if doc_index >= 28:
+        # Preserve room for system instructions, conversation history and the
+        # generated answer while allowing up to 100 relevant notes.
+        if context_results and context_chars + len(context_entry) > max_context_chars:
+            break
+        doc_index = next_index
+        context_results.append(r)
+        context_parts.append(context_entry)
+        context_chars += len(context_entry)
+        if doc_index >= 100:
             break
 
     context = "\n---\n".join(context_parts)
@@ -503,7 +514,7 @@ async def ask_question(
         session_id,
         "L2",
         "retrieval",
-        context[:12000],
+        context[:max_context_chars],
         {"document_ids": [r.document_id for r in context_results], "query": body.question},
     )
 
@@ -526,7 +537,7 @@ async def ask_question(
                     source_url=r.url,
                     similarity_score=r.similarity_score,
                 )
-                for r in search_results[:10]
+                for r in search_results[:100]
             ],
             session_id=session_id,
         )
@@ -631,7 +642,7 @@ async def ask_question(
             source_url=r.url,
             similarity_score=r.similarity_score,
         )
-        for r in context_results[:20]
+        for r in context_results[:100]
     ]
 
     return AskResponse(

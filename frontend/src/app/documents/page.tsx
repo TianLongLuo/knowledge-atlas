@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getDocuments, deleteDocument, DocumentItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,8 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  FileText, Search, ChevronLeft, ChevronRight,
-  ArrowRight, Calendar, Trash2, Loader2,
+  FileText, Search, ArrowRight, Calendar, Trash2, Loader2,
 } from "lucide-react";
 import { CreateNoteDialog } from "@/components/create-note-dialog";
 import { useNoteReader } from "@/components/note-reader";
@@ -34,6 +33,7 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [sourceType, setSourceType] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -41,29 +41,69 @@ export default function DocumentsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const { openDocument } = useNoteReader();
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadMoreRequestedRef = useRef(false);
+  const queryVersionRef = useRef(0);
   const pageSize = 20;
 
-  const loadDocuments = useCallback(async () => {
-    setLoading(true);
+  const loadDocuments = useCallback(async (pageToLoad: number, replace: boolean, requestVersion = queryVersionRef.current) => {
+    if (replace) setLoading(true); else setLoadingMore(true);
     try {
-      const params: Record<string, string | number> = { page, page_size: pageSize };
+      const params: Record<string, string | number> = { page: pageToLoad, page_size: pageSize };
       if (search.trim()) params.search = search.trim();
       if (sourceType !== "all") params.source_type = sourceType;
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
       const data = await getDocuments(params as Parameters<typeof getDocuments>[0]);
-      setDocuments(data.items);
+      if (requestVersion !== queryVersionRef.current) return;
+      setDocuments((current) => {
+        if (replace) return data.items;
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...data.items.filter((item) => !seen.has(item.id))];
+      });
       setTotal(data.total);
     } catch (err) {
       console.error("Failed to load documents:", err);
     } finally {
-      setLoading(false);
+      if (requestVersion === queryVersionRef.current) {
+        if (replace) setLoading(false); else setLoadingMore(false);
+      }
     }
-  }, [page, search, sourceType, dateFrom, dateTo]);
+  }, [search, sourceType, dateFrom, dateTo]);
 
-  useEffect(() => { loadDocuments(); }, [loadDocuments]);
   useEffect(() => {
-    const refresh = () => void loadDocuments();
+    const requestVersion = ++queryVersionRef.current;
+    loadMoreRequestedRef.current = false;
+    setPage(1);
+    setDocuments([]);
+    void loadDocuments(1, true, requestVersion);
+  }, [loadDocuments]);
+
+  useEffect(() => {
+    if (page > 1) {
+      void loadDocuments(page, false).finally(() => { loadMoreRequestedRef.current = false; });
+    }
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hasMore = documents.length < total;
+  useEffect(() => {
+    const target = sentinelRef.current;
+    if (!target || !hasMore || loading || loadingMore) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !loadMoreRequestedRef.current) {
+        loadMoreRequestedRef.current = true;
+        setPage((current) => current + 1);
+      }
+    }, { rootMargin: "320px 0px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMore, loading, loadingMore]);
+  useEffect(() => {
+    const refresh = () => {
+      const requestVersion = ++queryVersionRef.current;
+      setPage(1);
+      void loadDocuments(1, true, requestVersion);
+    };
     window.addEventListener("atlas:note-created", refresh);
     window.addEventListener("atlas:note-updated", refresh);
     window.addEventListener("atlas:note-deleted", refresh);
@@ -81,15 +121,15 @@ export default function DocumentsPage() {
     try {
       await deleteDocument(id);
       setConfirmDelete(null);
-      loadDocuments();
+      const requestVersion = ++queryVersionRef.current;
+      setPage(1);
+      await loadDocuments(1, true, requestVersion);
     } catch (err) {
       console.error("Delete failed:", err);
     } finally {
       setDeleting(null);
     }
   };
-
-  const totalPages = Math.ceil(total / pageSize);
 
   const sourceLabel = (t: string) => {
     const labels: Record<string, string> = { file: "File", url: "URL", manual: "Manual", api: "API" };
@@ -103,7 +143,7 @@ export default function DocumentsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Documents</h1>
           <p className="text-muted-foreground mt-1">Browse, edit, and manage your knowledge documents.</p>
         </div>
-        <CreateNoteDialog onCreated={loadDocuments} />
+        <CreateNoteDialog onCreated={() => { const requestVersion = ++queryVersionRef.current; setPage(1); void loadDocuments(1, true, requestVersion); }} />
       </div>
 
       {/* Filters */}
@@ -115,11 +155,11 @@ export default function DocumentsPage() {
               <Input
                 placeholder="Search document titles..."
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                onChange={(e) => setSearch(e.target.value)}
                 className="pl-9"
               />
             </div>
-            <Select value={sourceType} onValueChange={(v) => { setSourceType(v || "all"); setPage(1); }}>
+            <Select value={sourceType} onValueChange={(v) => setSourceType(v || "all")}>
               <SelectTrigger className="w-full md:w-40">
                 <SelectValue placeholder="Document type" />
               </SelectTrigger>
@@ -131,9 +171,9 @@ export default function DocumentsPage() {
             </Select>
             <div className="flex gap-2 items-center">
               <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
-              <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} className="w-full md:w-auto" />
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full md:w-auto" />
               <span className="text-muted-foreground">to</span>
-              <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} className="w-full md:w-auto" />
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full md:w-auto" />
             </div>
           </div>
         </CardContent>
@@ -208,20 +248,9 @@ export default function DocumentsPage() {
             </div>
           )}
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between pt-4 mt-4 border-t">
-              <p className="text-sm text-muted-foreground">Page {page} of {totalPages}</p>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-                  <ChevronLeft className="h-4 w-4 mr-1" />Previous
-                </Button>
-                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-                  Next<ChevronRight className="h-4 w-4 ml-1" />
-                </Button>
-              </div>
-            </div>
-          )}
+          <div ref={sentinelRef} className="mt-4 flex min-h-14 items-center justify-center border-t pt-4 text-sm text-muted-foreground">
+            {loadingMore ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading more notes…</> : hasMore ? "Scroll to load more" : documents.length > 0 ? `All ${total} notes loaded` : null}
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -236,13 +236,13 @@ export default function GraphPage() {
               nodeLabel={(node) => `${node.label}<br/>${node.node_type} · ${node.degree} links`}
               nodeColor={(node) => typeColor(node.node_type)}
               linkColor={(edge) => {
-                if (!focusedId) return "rgba(91,120,168,0.28)";
+                if (!focusedId) return "rgba(79,111,163,0.42)";
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
                 return isFocused ? "rgba(37,99,235,0.92)" : "rgba(148,163,184,0.08)";
               }}
               linkWidth={(edge) => {
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                if (!focusedId) return 0.55 + edge.weight * 0.45;
+                if (!focusedId) return 0.85 + edge.weight * 0.55;
                 return isFocused ? 1.35 + edge.weight * 2.1 : 0.3;
               }}
               linkDirectionalParticles={(edge) => {
