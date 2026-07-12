@@ -23,6 +23,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [tags, setTags] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
@@ -32,10 +33,11 @@ export function CreateNoteDialog({ onCreated }: Props) {
     setLoading(true);
     setError("");
     try {
-      await createNote({ title: title.trim(), content: content.trim(), source: "manual", tags: "" });
+      await createNote({ title: title.trim(), content, source: "manual", tags: tags.trim() });
       setOpen(false);
       setTitle("");
       setContent("");
+      setTags("");
       router.refresh();
       onCreated?.();
     } catch (e: unknown) {
@@ -53,7 +55,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
           New note
         </Button>
       </DialogTrigger>
-      <DialogContent className="border-border/80 bg-popover/95 text-foreground sm:max-w-lg">
+      <DialogContent className="border-border/80 bg-popover/95 text-foreground sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>New note</DialogTitle>
         </DialogHeader>
@@ -68,9 +70,11 @@ export function CreateNoteDialog({ onCreated }: Props) {
             placeholder="Content..."
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            rows={8}
-            className="bg-background/70 resize-none"
+            rows={16}
+            className="min-h-[42vh] max-h-[65vh] bg-background/70 resize-y leading-7"
           />
+          <p className="text-right text-xs text-muted-foreground">{content.length.toLocaleString()} characters</p>
+          <Input placeholder="Tags, separated by commas" value={tags} onChange={(event) => setTags(event.target.value)} className="bg-background/70" />
           {error && <p className="text-red-400 text-sm">{error}</p>}
           <Button
             onClick={handleCreate}

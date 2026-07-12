@@ -7,8 +7,9 @@ Chroma-only records for backward compatibility.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -30,6 +31,7 @@ from utils import (
     merge_chunk_texts,
     normalize_document_id,
     pseudo_id,
+    normalized_tags,
 )
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -144,6 +146,55 @@ def _deduplicate_postgres_documents(documents: list[Document]) -> list[Document]
     return unique_documents
 
 
+_NOTE_DATE_KEYS = (
+    "note_created_at", "original_created_at", "created_time", "published_at",
+    "note_date", "date", "timestamp",
+)
+_SYSTEM_DATE_KEYS = ("ingested_at", "imported_at", "synced_at")
+
+
+def _parse_document_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 10_000_000_000:
+            number /= 1000
+        try:
+            return datetime.fromtimestamp(number, timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _document_datetime(item: DocumentResponse, field: str) -> datetime | None:
+    metadata = item.metadata_ or {}
+    keys = _NOTE_DATE_KEYS if field == "note_date" else _SYSTEM_DATE_KEYS
+    for key in keys:
+        parsed = _parse_document_datetime(metadata.get(key))
+        if parsed is not None:
+            return parsed
+    return item.created_at if field in {"note_date", "system_created"} else item.updated_at
+
+
+def _datetime_timestamp(value: datetime | None) -> float:
+    if value is None:
+        return 0.0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
+
+
+def _document_tags(item: DocumentResponse) -> list[str]:
+    return normalized_tags(item.metadata_ or {})
+
+
 def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
     """Given a negative pseudo-ID, return every backing Chroma row and document."""
     docs = _get_legacy_chroma_docs()
@@ -172,6 +223,10 @@ async def list_documents(
     search: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
+    date_field: Literal["note_date", "system_created"] = Query(default="note_date"),
+    tag: str | None = Query(default=None),
+    sort_by: Literal["note_date", "system_created", "updated_at", "title"] = Query(default="note_date"),
+    sort_order: Literal["asc", "desc"] = Query(default="desc"),
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
@@ -186,16 +241,6 @@ async def list_documents(
                 Document.normalized_content.ilike(f"%{search}%"),
             )
         )
-    try:
-        if date_from:
-            start = datetime.combine(datetime.fromisoformat(date_from).date(), time.min)
-            base_query = base_query.where(Document.created_at >= start)
-        if date_to:
-            end = datetime.combine(datetime.fromisoformat(date_to).date(), time.max)
-            base_query = base_query.where(Document.created_at <= end)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Invalid date filter; expected YYYY-MM-DD") from exc
-
     result = await db.execute(base_query.order_by(Document.updated_at.desc()))
     pg_docs = result.scalars().all()
     # PostgreSQL can also contain historical duplicate imports. Keep the newest
@@ -217,23 +262,6 @@ async def list_documents(
                 c for c in chroma_items
                 if s in c["title"].lower() or s in (c["normalized_content"] or "").lower()
             ]
-        if date_from or date_to:
-            start_date = datetime.fromisoformat(date_from).date() if date_from else None
-            end_date = datetime.fromisoformat(date_to).date() if date_to else None
-            dated_items = []
-            for item in chroma_items:
-                raw_date = item["created_at"]
-                try:
-                    item_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date() if raw_date else None
-                except (TypeError, ValueError):
-                    item_date = None
-                if start_date and (item_date is None or item_date < start_date):
-                    continue
-                if end_date and (item_date is None or item_date > end_date):
-                    continue
-                dated_items.append(item)
-            chroma_items = dated_items
-
         for ci in chroma_items:
             items.append(DocumentResponse(
                 id=ci["id"],
@@ -248,11 +276,54 @@ async def list_documents(
                 updated_at=ci["updated_at"],
             ))
 
+    try:
+        start_date = datetime.fromisoformat(date_from).date() if date_from else None
+        end_date = datetime.fromisoformat(date_to).date() if date_to else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid date filter; expected YYYY-MM-DD") from exc
+
+    if tag:
+        normalized_tag = tag.casefold()
+        items = [item for item in items if normalized_tag in {value.casefold() for value in _document_tags(item)}]
+    if start_date or end_date:
+        dated_items: list[DocumentResponse] = []
+        for item in items:
+            value = _document_datetime(item, date_field)
+            item_date = value.date() if value else None
+            if start_date and (item_date is None or item_date < start_date):
+                continue
+            if end_date and (item_date is None or item_date > end_date):
+                continue
+            dated_items.append(item)
+        items = dated_items
+
+    reverse = sort_order == "desc"
+    if sort_by == "title":
+        items.sort(key=lambda item: (item.title.casefold(), item.id), reverse=reverse)
+    else:
+        items.sort(
+            key=lambda item: (_datetime_timestamp(_document_datetime(item, sort_by)), item.id),
+            reverse=reverse,
+        )
+
     total = len(items)
     start = (page - 1) * page_size
     items = items[start:start + page_size]
 
     return DocumentListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/filter-options")
+async def document_filter_options(
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    pg_documents = (await db.execute(select(Document))).scalars().all()
+    tags = {tag for document in pg_documents for tag in normalized_tags(document.metadata_ or {})}
+    canonical_ids = {document.id for document in pg_documents}
+    for document in _get_legacy_chroma_docs(canonical_ids):
+        tags.update(normalized_tags(document.get("metadata") or {}))
+    return {"tags": sorted(tags, key=str.casefold)}
 
 
 # ── Get detail ────────────────────────────────────────────────────

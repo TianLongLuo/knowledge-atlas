@@ -10,8 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import get_current_user
 from database import get_db
 from models import Document, DocumentChunk, SyncState
+from schemas import DocumentResponse
 from routers.documents import (
+    _datetime_timestamp,
     _deduplicate_postgres_documents,
+    _document_datetime,
     _get_canonical_document_ids,
     _get_legacy_chroma_docs,
 )
@@ -68,23 +71,39 @@ async def recent_documents(
     _user: str = Depends(get_current_user),
 ):
     limit = max(1, min(limit, 20))
-    pg_docs = (
-        await db.execute(select(Document).order_by(Document.updated_at.desc()).limit(limit))
-    ).scalars().all()
+    pg_docs = (await db.execute(select(Document).order_by(Document.updated_at.desc()))).scalars().all()
+    pg_docs = _deduplicate_postgres_documents(pg_docs)
     items = [
         {
             "id": str(doc.id),
             "title": doc.title,
             "source_type": doc.source_type,
             "created_at": (doc.created_at or doc.updated_at or datetime.fromtimestamp(0, timezone.utc)),
+            "updated_at": doc.updated_at,
+            "metadata": doc.metadata_ or {},
         }
         for doc in pg_docs
     ]
-    for doc in _get_legacy_chroma_docs()[:limit]:
+    canonical_ids = {doc.id for doc in pg_docs}
+    canonical_fingerprints = {
+        content_fingerprint(doc.title, doc.normalized_content or doc.raw_content or "", doc.source_type)
+        for doc in pg_docs
+    }
+    for doc in _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints):
         items.append({
             "id": str(doc["id"]),
             "title": doc["title"],
             "source_type": doc["source_type"],
             "created_at": doc["created_at"] or doc["updated_at"] or datetime.fromtimestamp(0, timezone.utc).isoformat(),
+            "metadata": doc.get("metadata") or {},
+            "updated_at": doc["updated_at"],
         })
-    return items[:limit]
+    items.sort(
+        key=lambda item: _datetime_timestamp(_document_datetime(DocumentResponse(
+            id=int(item["id"]), title=item["title"], source_type=item["source_type"],
+            metadata=item.get("metadata") or {}, created_at=item.get("created_at"),
+            updated_at=item.get("updated_at"),
+        ), "note_date")),
+        reverse=True,
+    )
+    return [{key: value for key, value in item.items() if key not in {"metadata", "updated_at"}} for item in items[:limit]]

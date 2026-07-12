@@ -244,3 +244,19 @@ def test_dashboard_and_document_list_share_postgres_deduplication():
 
     unique = _deduplicate_postgres_documents(documents)
     assert [document.title for document in unique] == ["Older", "Standalone"]
+
+
+def test_document_note_date_prefers_source_metadata():
+    from routers.documents import _document_datetime
+    from schemas import DocumentResponse
+
+    document = DocumentResponse(
+        id=1,
+        source_type="notion",
+        title="Dated note",
+        metadata={"created_time": "2024-02-03T10:30:00Z"},
+        created_at="2026-07-12T10:00:00Z",
+    )
+
+    assert _document_datetime(document, "note_date").isoformat() == "2024-02-03T10:30:00+00:00"
+    assert _document_datetime(document, "system_created").isoformat() == "2026-07-12T10:00:00+00:00"

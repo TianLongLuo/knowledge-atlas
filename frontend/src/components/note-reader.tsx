@@ -119,7 +119,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             </DialogHeader>
           </div>
 
-          <div className="min-h-[55vh] flex-1 overflow-y-auto px-7 py-6 sm:px-10">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-6 sm:px-10" style={{ height: "min(68vh, 760px)" }}>
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
             {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (

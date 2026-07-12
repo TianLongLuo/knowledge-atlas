@@ -66,6 +66,8 @@ export interface DocumentItem {
   updated_at: string;
   status: string;
   chunk_count: number;
+  tags: string[];
+  note_at: string;
 }
 export interface DocumentListResponse { items: DocumentItem[]; total: number; page: number; page_size: number }
 export interface ChunkItem { id: number; document_id: number; chunk_index: number; chunk_text: string; token_count: number }
@@ -81,6 +83,13 @@ export interface DocumentDetail extends DocumentItem {
 
 function mapDocument(doc: RawDocument): DocumentItem {
   const content = doc.normalized_content || doc.raw_content || "";
+  const rawTags = doc.metadata?.tags || doc.metadata?.tag || [];
+  const tags = Array.isArray(rawTags)
+    ? rawTags.map(String).filter(Boolean)
+    : String(rawTags).split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
+  const noteAt = ["note_created_at", "original_created_at", "created_time", "published_at", "note_date", "date", "timestamp"]
+    .map((key) => doc.metadata?.[key])
+    .find(Boolean);
   return {
     id: String(doc.id),
     title: doc.title,
@@ -91,16 +100,24 @@ function mapDocument(doc: RawDocument): DocumentItem {
     updated_at: doc.updated_at || doc.created_at || new Date(0).toISOString(),
     status: "ready",
     chunk_count: doc.chunks?.length || 0,
+    tags,
+    note_at: String(noteAt || doc.created_at || doc.updated_at || new Date(0).toISOString()),
   };
 }
 
 export async function getDocuments(params: {
   page?: number; page_size?: number; search?: string; source_type?: string; date_from?: string; date_to?: string;
+  date_field?: "note_date" | "system_created"; tag?: string;
+  sort_by?: "note_date" | "system_created" | "updated_at" | "title"; sort_order?: "asc" | "desc";
 }): Promise<DocumentListResponse> {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); });
   const raw = await apiFetch<{ items: RawDocument[]; total: number; page: number; page_size: number }>(`/documents?${query}`);
   return { ...raw, items: raw.items.map(mapDocument) };
+}
+
+export function getDocumentFilterOptions() {
+  return apiFetch<{ tags: string[] }>("/documents/filter-options");
 }
 
 export async function getDocument(id: string): Promise<DocumentDetail> {
