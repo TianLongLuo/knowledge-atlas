@@ -13,7 +13,6 @@ from models import Document, DocumentChunk, SyncState
 from routers.documents import (
     _deduplicate_postgres_documents,
     _get_canonical_document_ids,
-    _get_chroma_docs,
     _get_legacy_chroma_docs,
 )
 from utils import content_fingerprint
@@ -81,7 +80,7 @@ async def recent_documents(
         }
         for doc in pg_docs
     ]
-    for doc in _get_chroma_docs()[:limit]:
+    for doc in _get_legacy_chroma_docs()[:limit]:
         items.append({
             "id": str(doc["id"]),
             "title": doc["title"],
