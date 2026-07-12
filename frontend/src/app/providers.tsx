@@ -5,6 +5,7 @@ import { AppLayout } from "@/components/app-layout";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { useEffect, useRef } from "react";
+import { NoteReaderProvider } from "@/components/note-reader";
 
 function SSEProvider({ children }: { children: React.ReactNode }) {
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -58,9 +59,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <AuthProvider>
       <TooltipProvider>
         <SSEProvider>
-          <AppLayout>
-            {children}
-          </AppLayout>
+          <NoteReaderProvider>
+            <AppLayout>{children}</AppLayout>
+          </NoteReaderProvider>
           <Toaster />
         </SSEProvider>
       </TooltipProvider>

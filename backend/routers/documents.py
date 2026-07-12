@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, time, timezone
-import hashlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,7 +24,13 @@ from schemas import (
     DocumentResponse,
 )
 from services.note_service import note_service
-from utils import normalize_document_id, pseudo_id
+from utils import (
+    content_fingerprint,
+    legacy_document_key,
+    merge_chunk_texts,
+    normalize_document_id,
+    pseudo_id,
+)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -54,19 +59,24 @@ async def _get_canonical_document_ids(db: AsyncSession) -> set[int]:
         return set()
 
 
-def _get_legacy_chroma_docs(canonical_ids: set[int] = None) -> list[dict]:
+def _get_legacy_chroma_docs(
+    canonical_ids: set[int] | None = None,
+    canonical_fingerprints: set[str] | None = None,
+) -> list[dict]:
     """Get ChromaDB records that are NOT already represented in PostgreSQL.
 
     Skips Chroma chunks whose document_id metadata matches a known
-    PostgreSQL canonical document. Limited to 500 records for performance.
+    PostgreSQL canonical document. Reads the complete collection so pagination
+    and duplicate grouping cannot silently omit older notes.
     """
     if canonical_ids is None:
         canonical_ids = set()
+    if canonical_fingerprints is None:
+        canonical_fingerprints = set()
     try:
         collection = get_chroma_collection()
-        result = collection.get(include=["documents", "metadatas"], limit=500)
-        items = []
-        seen_pseudo_ids = set()
+        result = collection.get(include=["documents", "metadatas"])
+        groups: dict[str, dict] = {}
         if result["ids"]:
             for i, cid in enumerate(result["ids"]):
                 meta = (result["metadatas"][i] or {}) if result["metadatas"] else {}
@@ -79,38 +89,51 @@ def _get_legacy_chroma_docs(canonical_ids: set[int] = None) -> list[dict]:
                     if doc_id > 0 and doc_id in canonical_ids:
                         continue
 
-                pid = _pseudo_id(cid)
-                # Skip pseudo-ID collisions (same hash for different chroma IDs)
-                if pid in seen_pseudo_ids:
+                fingerprint = content_fingerprint(
+                    str(meta.get("title") or "Untitled"), text, str(meta.get("source") or "chromadb")
+                )
+                if fingerprint in canonical_fingerprints:
                     continue
-                seen_pseudo_ids.add(pid)
 
-                items.append({
-                    "id": pid,
+                logical_key = legacy_document_key(cid, meta, text)
+                group = groups.setdefault(logical_key, {
+                    "id": _pseudo_id(logical_key),
+                    "logical_key": logical_key,
                     "chroma_real_id": cid,
+                    "chroma_real_ids": [],
                     "source_type": meta.get("source", "chromadb"),
                     "source_id": cid,
                     "title": meta.get("title", "Untitled"),
-                    "raw_content": text,
-                    "normalized_content": text,
+                    "content_parts": [],
                     "metadata": meta,
                     "content_hash": None,
                     "created_at": meta.get("created_at") or meta.get("timestamp"),
                     "updated_at": meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp"),
                 })
+                group["chroma_real_ids"].append(cid)
+                group["content_parts"].append((int(meta.get("chunk_index") or 0), text))
+
+        items = []
+        for group in groups.values():
+            ordered = [text for _, text in sorted(group.pop("content_parts"), key=lambda item: item[0])]
+            full_content = merge_chunk_texts(ordered)
+            group["raw_content"] = full_content
+            group["normalized_content"] = full_content
+            group["metadata"] = {**group["metadata"], "_chroma_ids": group["chroma_real_ids"]}
+            items.append(group)
         return items
     except Exception:
         logger.exception("Failed to read documents from ChromaDB")
         return []
 
 
-def _find_chroma_by_neg_id(neg_id: int) -> tuple[str | None, dict | None]:
-    """Given a negative pseudo-ID, return (chroma_real_id, doc_dict)."""
+def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
+    """Given a negative pseudo-ID, return every backing Chroma row and document."""
     docs = _get_legacy_chroma_docs()
     for d in docs:
         if d["id"] == neg_id:
-            return d["chroma_real_id"], d
-    return None, None
+            return d["chroma_real_ids"], d
+    return [], None
 
 
 # ── Request schemas ───────────────────────────────────────────────
@@ -158,12 +181,30 @@ async def list_documents(
 
     result = await db.execute(base_query.order_by(Document.updated_at.desc()))
     pg_docs = result.scalars().all()
-    items = [DocumentResponse.model_validate(d) for d in pg_docs]
+    # PostgreSQL can also contain historical duplicate imports. Keep the newest
+    # canonical row for each external identity or exact content fingerprint.
+    unique_pg_docs = []
+    seen_pg: set[str] = set()
+    for doc in pg_docs:
+        key = (
+            f"external:{doc.source_type}:{doc.source_id}"
+            if doc.source_id
+            else f"content:{doc.content_hash or content_fingerprint(doc.title, doc.normalized_content or doc.raw_content or '', doc.source_type)}"
+        )
+        if key in seen_pg:
+            continue
+        seen_pg.add(key)
+        unique_pg_docs.append(doc)
+    items = [DocumentResponse.model_validate(d) for d in unique_pg_docs]
 
     # Add legacy Chroma-only records (not already in PostgreSQL)
     if source_type is None or source_type == "chromadb":
-        canonical_ids = {d.id for d in pg_docs}
-        chroma_items = _get_legacy_chroma_docs(canonical_ids)
+        canonical_ids = await _get_canonical_document_ids(db)
+        canonical_fingerprints = {
+            content_fingerprint(d.title, d.normalized_content or d.raw_content or "", d.source_type)
+            for d in unique_pg_docs
+        }
+        chroma_items = _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints)
         if search:
             s = search.lower()
             chroma_items = [
@@ -248,6 +289,11 @@ async def get_document(
         select(DocumentChunk).where(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index)
     )
     chunks = chunks_result.scalars().all()
+    reconstructed = merge_chunk_texts([chunk.chunk_text for chunk in chunks])
+    full_content = max(
+        (doc.raw_content or "", doc.normalized_content or "", reconstructed),
+        key=len,
+    )
 
     nodes_result = await db.execute(
         select(KnowledgeNode).where(KnowledgeNode.source_document_id == document_id)
@@ -270,8 +316,8 @@ async def get_document(
     return DocumentDetailResponse(
         id=doc.id, source_type=doc.source_type, source_id=doc.source_id,
         title=doc.title,
-        raw_content=doc.raw_content or "",
-        normalized_content=doc.normalized_content or "",
+        raw_content=full_content,
+        normalized_content=full_content,
         metadata=doc.metadata_, content_hash=doc.content_hash,
         created_at=doc.created_at, updated_at=doc.updated_at,
         chunks=[ChunkResponse.model_validate(c) for c in chunks],
@@ -297,17 +343,17 @@ async def update_document(
     """
     # ── ChromaDB note update (legacy) ──────────────────────────────
     if document_id < 0:
-        real_id, _ = _find_chroma_by_neg_id(document_id)
-        if not real_id:
+        real_ids, legacy_doc = _find_chroma_by_neg_id(document_id)
+        if not real_ids or not legacy_doc:
             raise HTTPException(status_code=404, detail="Note not found")
 
         collection = get_chroma_collection()
-        existing = collection.get(ids=[real_id], include=["documents", "metadatas"])
+        existing = collection.get(ids=real_ids, include=["documents", "metadatas"])
         if not existing["ids"]:
             raise HTTPException(status_code=404, detail="Note not found")
 
         old_meta = (existing["metadatas"][0] or {}) if existing["metadatas"] else {}
-        old_text = (existing["documents"][0] or "") if existing["documents"] else ""
+        old_text = legacy_doc["normalized_content"] or ""
 
         new_title = body.title if body.title is not None else old_meta.get("title", "Untitled")
         if not new_title.strip():
@@ -326,9 +372,11 @@ async def update_document(
 
             model = SentenceTransformer(settings.embedding_model)
             new_embedding = await asyncio.to_thread(lambda: model.encode(new_content).tolist())
-            collection.update(ids=[real_id], documents=[new_content], metadatas=[new_meta], embeddings=[new_embedding])
+            collection.update(ids=[real_ids[0]], documents=[new_content], metadatas=[new_meta], embeddings=[new_embedding])
         else:
-            collection.update(ids=[real_id], documents=[new_content], metadatas=[new_meta])
+            collection.update(ids=[real_ids[0]], documents=[new_content], metadatas=[new_meta])
+        if len(real_ids) > 1:
+            collection.delete(ids=real_ids[1:])
 
         from services.search_service import invalidate_search_cache
         from routers.graph import invalidate_graph_cache
@@ -339,7 +387,7 @@ async def update_document(
         return DocumentResponse(
             id=document_id,
             source_type=old_meta.get("source", "web"),
-            source_id=real_id,
+            source_id=real_ids[0],
             title=new_title,
             raw_content=new_content[:500],
             normalized_content=new_content[:500],
@@ -389,13 +437,13 @@ async def delete_document(
     """Delete a document or legacy ChromaDB note."""
     # ── ChromaDB note delete (legacy) ──────────────────────────────
     if document_id < 0:
-        real_id, _ = _find_chroma_by_neg_id(document_id)
-        if not real_id:
+        real_ids, _ = _find_chroma_by_neg_id(document_id)
+        if not real_ids:
             raise HTTPException(status_code=404, detail="Note not found")
 
         collection = get_chroma_collection()
         try:
-            collection.delete(ids=[real_id])
+            collection.delete(ids=real_ids)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to delete from ChromaDB: {e}")
 

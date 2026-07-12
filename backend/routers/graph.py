@@ -18,6 +18,7 @@ from utils import (
     dominant_group,
     content_snippet,
     display_label,
+    legacy_document_key,
 )
 
 logger = logging.getLogger("knowledge-atlas.graph")
@@ -73,14 +74,15 @@ def _empty_response() -> GraphResponse:
     )
 
 
-def _node_identity(chroma_id: str, metadata: dict) -> tuple[str, int]:
+def _node_identity(chroma_id: str, metadata: dict, content: str = "") -> tuple[str, int]:
     """Collapse all chunks belonging to one document into one graph node."""
     raw_document_id = metadata.get("document_id")
     try:
         document_id = int(raw_document_id)
         return f"document:{document_id}", document_id
     except (TypeError, ValueError):
-        return f"chroma:{chroma_id}", _pseudo_id(chroma_id)
+        logical_key = legacy_document_key(chroma_id, metadata, content)
+        return f"legacy:{logical_key}", _pseudo_id(logical_key)
 
 
 @router.get("/full", response_model=GraphResponse)
@@ -123,7 +125,7 @@ async def get_full_graph(
         for index, chroma_id in enumerate(ids):
             metadata = metadatas[index] or {}
             text = documents[index] or ""
-            node_id, document_id = _node_identity(chroma_id, metadata)
+            node_id, document_id = _node_identity(chroma_id, metadata, text)
             aggregate = aggregates.setdefault(node_id, {
                 "document_id": document_id,
                 "title": str(metadata.get("title") or f"Note {index + 1}"),
@@ -181,21 +183,24 @@ async def get_full_graph(
                 # Oversample because the nearest records may be sibling chunks
                 # from the same document and are collapsed below.
                 n_results=min(neighbors * 8 + 1, collection.count()),
-                include=["distances", "metadatas"],
+                include=["distances", "metadatas", "documents"],
             )
             neighbor_ids = nearest.get("ids") or []
             neighbor_distances = nearest.get("distances") or []
             neighbor_metadatas = nearest.get("metadatas") or []
+            neighbor_documents = nearest.get("documents") or []
             allowed = set(nodes_by_id)
             for source_index, source_id in enumerate(query_node_ids):
                 if source_index >= len(neighbor_ids):
                     continue
                 distances = neighbor_distances[source_index] if source_index < len(neighbor_distances) else []
                 metadata_row = neighbor_metadatas[source_index] if source_index < len(neighbor_metadatas) else []
+                document_row = neighbor_documents[source_index] if source_index < len(neighbor_documents) else []
                 accepted = 0
                 for target_index, target_chroma_id in enumerate(neighbor_ids[source_index]):
                     target_metadata = metadata_row[target_index] if target_index < len(metadata_row) else {}
-                    target_id, _ = _node_identity(target_chroma_id, target_metadata or {})
+                    target_content = document_row[target_index] if target_index < len(document_row) else ""
+                    target_id, _ = _node_identity(target_chroma_id, target_metadata or {}, target_content or "")
                     if target_id == source_id or target_id not in allowed or target_index >= len(distances):
                         continue
                     similarity = max(0.0, min(1.0, 1.0 - float(distances[target_index])))

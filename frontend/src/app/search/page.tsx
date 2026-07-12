@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { search, SearchResultItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,10 +16,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, FileText, ArrowRight, Loader2 } from "lucide-react";
+import { useNoteReader } from "@/components/note-reader";
 
 export default function SearchPage() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const { openDocument } = useNoteReader();
 
   const [query, setQuery] = useState(searchParams.get("q") || "");
   const [searchType, setSearchType] = useState<"keyword" | "vector" | "hybrid">("hybrid");
@@ -141,9 +142,7 @@ export default function SearchPage() {
                   <div
                     key={item.chunk_id || idx}
                     className="p-4 rounded-lg border hover:bg-accent/50 cursor-pointer transition-colors"
-                    onClick={() =>
-                      router.push(`/documents/${item.document_id}`)
-                    }
+                    onClick={() => openDocument(item.document_id)}
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">

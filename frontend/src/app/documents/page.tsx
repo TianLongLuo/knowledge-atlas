@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import { getDocuments, deleteDocument, DocumentItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +19,7 @@ import {
   ArrowRight, Calendar, Trash2, Loader2,
 } from "lucide-react";
 import { CreateNoteDialog } from "@/components/create-note-dialog";
+import { useNoteReader } from "@/components/note-reader";
 
 const sourceTypes = [
   { value: "all", label: "All types" },
@@ -40,7 +40,7 @@ export default function DocumentsPage() {
   const [dateTo, setDateTo] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const router = useRouter();
+  const { openDocument } = useNoteReader();
   const pageSize = 20;
 
   const loadDocuments = useCallback(async () => {
@@ -62,6 +62,19 @@ export default function DocumentsPage() {
   }, [page, search, sourceType, dateFrom, dateTo]);
 
   useEffect(() => { loadDocuments(); }, [loadDocuments]);
+  useEffect(() => {
+    const refresh = () => void loadDocuments();
+    window.addEventListener("atlas:note-created", refresh);
+    window.addEventListener("atlas:note-updated", refresh);
+    window.addEventListener("atlas:note-deleted", refresh);
+    window.addEventListener("atlas:sync-complete", refresh);
+    return () => {
+      window.removeEventListener("atlas:note-created", refresh);
+      window.removeEventListener("atlas:note-updated", refresh);
+      window.removeEventListener("atlas:note-deleted", refresh);
+      window.removeEventListener("atlas:sync-complete", refresh);
+    };
+  }, [loadDocuments]);
 
   const handleDelete = async (id: string) => {
     setDeleting(id);
@@ -150,7 +163,7 @@ export default function DocumentsPage() {
                 >
                   <div
                     className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
-                    onClick={() => router.push(`/documents/${doc.id}`)}
+                    onClick={() => openDocument(doc.id)}
                   >
                     <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                     <div className="min-w-0 flex-1">
@@ -166,7 +179,7 @@ export default function DocumentsPage() {
 
                   <div className="flex items-center gap-2 shrink-0 ml-4">
                     <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition cursor-pointer"
-                      onClick={() => router.push(`/documents/${doc.id}`)} />
+                      onClick={() => openDocument(doc.id)} />
 
                     {/* Delete button with confirmation */}
                     {confirmDelete === doc.id ? (

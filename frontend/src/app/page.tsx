@@ -21,6 +21,7 @@ import {
   Search,
   ArrowRight,
 } from "lucide-react";
+import { useNoteReader } from "@/components/note-reader";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -28,6 +29,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const router = useRouter();
+  const { openDocument } = useNoteReader();
 
   useEffect(() => {
     async function loadData() {
@@ -220,7 +222,7 @@ export default function DashboardPage() {
                 <div
                   key={doc.id}
                   className="flex items-center justify-between p-3 rounded-lg hover:bg-accent/50 cursor-pointer transition-colors"
-                  onClick={() => router.push(`/documents/${doc.id}`)}
+                  onClick={() => openDocument(doc.id)}
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <FileText className="h-5 w-5 text-muted-foreground shrink-0" />

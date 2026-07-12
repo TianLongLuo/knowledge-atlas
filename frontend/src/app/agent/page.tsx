@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { askAgent, getMemoryInsights, reviewMemoryInsight } from "@/lib/api";
 import type { AgentResponse, AgentCitation, MemoryInsight } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Bot, User, Send, Loader2, Brain, Check, X, Sparkles, MessageCircleQuestion, Wifi, WifiOff, FileText, ChevronDown, Plus } from "lucide-react";
+import { MarkdownContent } from "@/components/markdown-content";
+import { useNoteReader } from "@/components/note-reader";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -25,7 +27,7 @@ const EMPTY_STATE_PROMPTS = [
 
 export default function AgentPage() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const { openDocument } = useNoteReader();
   const docId = searchParams.get("doc");
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -233,9 +235,11 @@ export default function AgentPage() {
                     <p className="text-xs text-muted-foreground mb-1">
                       {msg.role === "user" ? "You" : "Atlas"}
                     </p>
-                    <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                      {msg.content}
-                    </div>
+                    {msg.role === "assistant" ? (
+                      <MarkdownContent className="max-w-none">{msg.content}</MarkdownContent>
+                    ) : (
+                      <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
+                    )}
 
                     {/* Citations — collapsed by default */}
                     {msg.citations && msg.citations.length > 0 && (
@@ -251,7 +255,7 @@ export default function AgentPage() {
                                 key={ci}
                                 className="w-full text-left p-1.5 rounded hover:bg-accent transition-colors flex items-start gap-2"
                                 onClick={() =>
-                                  router.push(`/documents/${cite.document_id}`)
+                                  openDocument(cite.document_id)
                                 }
                               >
                                 <div className="min-w-0">

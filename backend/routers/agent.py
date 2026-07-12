@@ -31,7 +31,7 @@ from schemas import (
     MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
 )
 from services.search_service import SearchService, SearchResult
-from utils import is_broad_identity_question, mmr_diversify, pseudo_id, _IDENTITY_FACETS
+from utils import is_broad_identity_question, legacy_document_key, mmr_diversify, pseudo_id, _IDENTITY_FACETS
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ def corpus_profile_sample(limit: int = 24) -> list[SearchResult]:
             except (TypeError, ValueError):
                 document_id = 0
             if not document_id:
-                document_id = pseudo_id(chroma_id)
+                document_id = pseudo_id(legacy_document_key(chroma_id, metadata, content))
             raw_date = metadata.get("updated_at") or metadata.get("created_at") or metadata.get("timestamp")
             timestamp = 0.0
             if raw_date:
@@ -424,6 +424,8 @@ async def ask_question(
         .limit(8)
     )
     recent_history = list(reversed(history_result.scalars().all()))
+    recent_user_context = [memory.content for memory in recent_history if memory.role == "user"][-3:]
+    retrieval_query = "\n".join([*recent_user_context, body.question])
 
     # Confirmed insights only
     insight_result = await db.execute(
@@ -449,7 +451,7 @@ async def ask_question(
     elif body.document_id is not None:
         # Document-scoped: focused retrieval
         search_results = await search_service.search(
-            query=body.question,
+            query=retrieval_query,
             search_type="vector",
             top_k=max(body.top_k, 10),
             document_id=body.document_id,
@@ -458,9 +460,9 @@ async def ask_question(
     else:
         # Normal: focused vector search with larger pool
         search_results = await search_service.search(
-            query=body.question,
-            search_type="vector",
-            top_k=max(body.top_k, 15),
+            query=retrieval_query,
+            search_type="hybrid",
+            top_k=max(body.top_k, 30),
             document_id=body.document_id,
             db=db,
         )
@@ -537,7 +539,7 @@ async def ask_question(
     )
 
     mode_instructions = {
-        "knowledge": "Answer directly and accurately from the supplied notes.",
+        "knowledge": "Answer directly and accurately from the supplied notes. Use concise Markdown headings and lists when they improve readability.",
         "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and end with one clarifying question.",
         "socratic": "Use a Socratic style. Do not make the decision for the user. Connect the notes to the present question and ask one precise question that exposes an assumption or trade-off.",
     }
@@ -587,7 +589,7 @@ async def ask_question(
                 },
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=2200,
         )
         answer = response.choices[0].message.content or ""
         await save_memory(db, session_id, "L0", "assistant", answer)

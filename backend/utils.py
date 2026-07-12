@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from typing import Any
 
 from schemas import SearchResult
 
@@ -22,6 +23,77 @@ def normalize_document_id(raw: object) -> int:
         return int(raw)
     except (ValueError, TypeError):
         return 0
+
+
+def normalized_text(value: str) -> str:
+    """Normalize user text for deterministic duplicate detection."""
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def content_fingerprint(title: str, content: str, source: str = "") -> str:
+    """Fingerprint semantically identical imported records."""
+    payload = "\n".join((normalized_text(source), normalized_text(title), normalized_text(content)))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def legacy_document_key(chroma_id: str, metadata: dict[str, Any], content: str = "") -> str:
+    """Map legacy Chroma rows/chunks to one stable logical note identity."""
+    raw_document_id = normalize_document_id(metadata.get("document_id"))
+    if raw_document_id > 0:
+        return f"document:{raw_document_id}"
+
+    # Deterministic chunk writers conventionally suffix IDs this way.
+    chunk_base = re.sub(r"(?:[_:-]chunk[_:-]?)\d+$", "", chroma_id, flags=re.IGNORECASE)
+    if chunk_base != chroma_id:
+        return f"chunk-family:{chunk_base}"
+
+    source = str(metadata.get("source") or "chromadb")
+    title = str(metadata.get("title") or "Untitled")
+    external_identity = ""
+    for field in ("source_id", "notion_page_id", "page_id", "external_id", "url"):
+        value = str(metadata.get(field) or "").strip()
+        if value:
+            external_identity = f"external:{source.casefold()}:{field}:{value}"
+            break
+
+    # Chunked external documents must group by their parent identity.
+    if metadata.get("chunk_index") is not None and external_identity:
+        return external_identity
+
+    timestamp = str(metadata.get("created_at") or metadata.get("timestamp") or "").strip()
+    if metadata.get("chunk_index") is not None and timestamp:
+        return f"import:{normalized_text(source)}:{normalized_text(title)}:{timestamp[:19]}"
+
+    # Exact duplicate imports collapse even when importers assigned distinct
+    # source IDs. This is the common cause of repeated Flomo rows.
+    if content.strip():
+        return f"content:{content_fingerprint(title, content, source)}"
+    return external_identity or f"chroma:{chroma_id}"
+
+
+def merge_chunk_texts(chunks: list[str]) -> str:
+    """Join ordered chunks while removing repeated overlap and exact copies."""
+    merged = ""
+    seen: set[str] = set()
+    for raw in chunks:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        exact = normalized_text(text)
+        if exact in seen:
+            continue
+        seen.add(exact)
+        if not merged:
+            merged = text
+            continue
+        max_overlap = min(len(merged), len(text), 240)
+        overlap = 0
+        for size in range(max_overlap, 7, -1):
+            if merged[-size:] == text[:size]:
+                overlap = size
+                break
+        merged = f"{merged}{text[overlap:]}" if overlap else f"{merged}\n\n{text}"
+    return merged
 
 
 # ── Query-intent routing ──────────────────────────────────────────

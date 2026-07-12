@@ -5,6 +5,7 @@ from utils import (
     pseudo_id, normalize_document_id,
     is_broad_identity_question, mmr_diversify, _IDENTITY_FACETS,
     content_snippet, dominant_group, normalized_source_type, normalized_tags,
+    content_fingerprint, legacy_document_key, merge_chunk_texts,
 )
 from schemas import SearchResult
 
@@ -37,6 +38,50 @@ def test_normalize_document_id_handles_all_forms():
     assert normalize_document_id("not_a_number") == 0
     assert normalize_document_id("") == 0
     assert normalize_document_id("0") == 0
+
+
+def test_legacy_duplicate_rows_share_one_logical_identity():
+    meta = {"source": "flomo", "title": "同一篇笔记", "timestamp": "2026-07-04T08:00:00"}
+    first = legacy_document_key("random-a", meta, "相同内容")
+    second = legacy_document_key("random-b", meta, "相同内容")
+    assert first == second
+    assert legacy_document_key("a", {**meta, "source_id": "import-1"}, "相同内容") == legacy_document_key(
+        "b", {**meta, "source_id": "import-2"}, "相同内容"
+    )
+    assert content_fingerprint(" 标题 ", "a  b", "flomo") == content_fingerprint("标题", "a b", "FLOMO")
+
+
+def test_chunk_families_and_overlap_reconstruct_complete_note():
+    meta = {"source": "notion", "title": "Long note", "chunk_index": 0}
+    assert legacy_document_key("note_chunk_0", meta, "first") == legacy_document_key("note_chunk_1", meta, "second")
+    assert merge_chunk_texts(["one two three shared overlap text", "shared overlap text and the ending"]) == "one two three shared overlap text and the ending"
+    assert merge_chunk_texts(["same", "same", "different"]) == "same\n\ndifferent"
+
+
+def test_legacy_document_listing_collapses_duplicates_and_rebuilds_chunks(monkeypatch):
+    from routers import documents as documents_router
+
+    class FakeCollection:
+        def get(self, **_kwargs):
+            return {
+                "ids": ["duplicate-a", "duplicate-b", "long_chunk_0", "long_chunk_1"],
+                "documents": ["same note", "same note", "first half shared overlap", "shared overlap second half"],
+                "metadatas": [
+                    {"source": "flomo", "title": "Duplicate"},
+                    {"source": "flomo", "title": "Duplicate"},
+                    {"source": "notion", "title": "Long", "chunk_index": 0},
+                    {"source": "notion", "title": "Long", "chunk_index": 1},
+                ],
+            }
+
+    monkeypatch.setattr(documents_router, "get_chroma_collection", lambda: FakeCollection())
+    items = documents_router._get_legacy_chroma_docs()
+    assert len(items) == 2
+    duplicate = next(item for item in items if item["title"] == "Duplicate")
+    assert len(duplicate["chroma_real_ids"]) == 2
+    assert duplicate["raw_content"] == "same note"
+    long_note = next(item for item in items if item["title"] == "Long")
+    assert long_note["raw_content"] == "first half shared overlap second half"
 
 
 # ── Graph classification tests ────────────────────────────────────

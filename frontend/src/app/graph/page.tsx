@@ -2,14 +2,12 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { apiFetch, getDocument } from "@/lib/api";
-import type { DocumentDetail } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import type { ForceGraphMethods, LinkObject, NodeObject } from "react-force-graph-2d";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Check, ChevronDown, Filter, Focus, Maximize2, RotateCcw, Search, Settings2, X } from "lucide-react";
+import { useNoteReader } from "@/components/note-reader";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false }) as typeof import("react-force-graph-2d").default;
 
@@ -59,7 +57,7 @@ function truncate(value: string, length = 34) {
 }
 
 export default function GraphPage() {
-  const router = useRouter();
+  const { openDocument } = useNoteReader();
   const graphRef = useRef<ForceGraphMethods<GraphNode, GraphEdge> | undefined>(undefined);
   const hasFitRef = useRef(false);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -78,10 +76,6 @@ export default function GraphPage() {
   const [repulsion, setRepulsion] = useState(-125);
   const [linkDistance, setLinkDistance] = useState(75);
   const [showControls, setShowControls] = useState(true);
-  const [readerOpen, setReaderOpen] = useState(false);
-  const [readerLoading, setReaderLoading] = useState(false);
-  const [readerDocument, setReaderDocument] = useState<DocumentDetail | null>(null);
-  const [readerError, setReaderError] = useState("");
   const prefersReducedMotion = useRef(false);
 
   useEffect(() => {
@@ -178,7 +172,6 @@ export default function GraphPage() {
   }, [filtered.links]);
 
   const focusedId = hoveredId || selectedId;
-  const selectedNode = data?.nodes.find((node) => node.id === selectedId) || null;
   const focusedNode = data?.nodes.find((node) => node.id === focusedId) || null;
   const connectedIds = focusedId ? adjacency.get(focusedId) || new Set<string>() : new Set<string>();
   const related = focusedNode && data ? data.edges
@@ -194,32 +187,14 @@ export default function GraphPage() {
     node.label.toLowerCase().includes(query.trim().toLowerCase()),
   ).slice(0, 8) : [];
 
-  const openReader = useCallback(async (node: GraphNode) => {
-    setSelectedId(node.id); setReaderOpen(true); setReaderLoading(true); setReaderDocument(null); setReaderError("");
-    try { setReaderDocument(await getDocument(String(node.document_id))); }
-    catch (cause) { setReaderError(cause instanceof Error ? cause.message : "Document failed to load."); }
-    finally { setReaderLoading(false); }
-  }, []);
+  const openReader = useCallback((node: GraphNode) => {
+    setSelectedId(node.id);
+    openDocument(node.document_id);
+  }, [openDocument]);
 
   const toggleSet = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, value: string) => {
     setter((current) => { const next = new Set(current); if (next.has(value)) next.delete(value); else next.add(value); return next; });
   };
-
-  // Directional particle offset for animated links
-  const particleOffset = useRef(0);
-  const baseParticleRef = useRef(0);
-
-  useEffect(() => {
-    if (prefersReducedMotion.current) return;
-    let frame: number;
-    const animate = () => {
-      particleOffset.current = (particleOffset.current + 0.008) % 1;
-      baseParticleRef.current = (baseParticleRef.current + 0.003) % 1;
-      frame = requestAnimationFrame(animate);
-    };
-    frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
-  }, []);
 
   return (
     <div className="flex h-[calc(100vh-3rem)] min-h-[680px] flex-col gap-3">
@@ -261,13 +236,14 @@ export default function GraphPage() {
               nodeLabel={(node) => `${node.label}<br/>${node.node_type} · ${node.degree} links`}
               nodeColor={(node) => typeColor(node.node_type)}
               linkColor={(edge) => {
-                if (!focusedId) return "rgba(112,137,180,0.16)";
+                if (!focusedId) return "rgba(91,120,168,0.28)";
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? "rgba(67,124,224,0.82)" : "rgba(148,163,184,0.05)";
+                return isFocused ? "rgba(37,99,235,0.92)" : "rgba(148,163,184,0.08)";
               }}
               linkWidth={(edge) => {
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;
-                return isFocused ? 1.0 + edge.weight * 1.8 : 0.25;
+                if (!focusedId) return 0.55 + edge.weight * 0.45;
+                return isFocused ? 1.35 + edge.weight * 2.1 : 0.3;
               }}
               linkDirectionalParticles={(edge) => {
                 if (prefersReducedMotion.current || !focusedId) return 0;
@@ -388,13 +364,6 @@ export default function GraphPage() {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/90 bg-white/72 px-3 py-1.5 text-[11px] text-slate-500 shadow-sm backdrop-blur-xl">Scroll to zoom · Drag canvas to pan · Drag nodes to pin · Click for local context</div>
       </div>
 
-      <Dialog open={readerOpen} onOpenChange={setReaderOpen}>
-        <DialogContent className="max-h-[92vh] overflow-hidden sm:max-w-4xl">
-          <DialogHeader><DialogTitle>{readerDocument?.title || selectedNode?.label || "Note"}</DialogTitle><DialogDescription>{readerDocument ? `${readerDocument.source_type} · Updated ${new Date(readerDocument.updated_at).toLocaleString("en-US")}` : "Knowledge Atlas reader"}</DialogDescription></DialogHeader>
-          <div className="max-h-[68vh] overflow-y-auto rounded-lg border bg-background p-6">{readerLoading && <p className="text-sm text-muted-foreground">Loading note…</p>}{readerError && <p className="text-sm text-red-600">{readerError}</p>}{readerDocument && <article className="whitespace-pre-wrap text-sm leading-7">{readerDocument.content || "This note has no readable content."}</article>}</div>
-          {readerDocument && <div className="flex justify-between"><Button variant="outline" onClick={() => router.push(`/agent?doc=${readerDocument.id}`)}>Ask AI about this note</Button><Button variant="outline" onClick={() => router.push(`/documents/${readerDocument.id}`)}>Open document page</Button></div>}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

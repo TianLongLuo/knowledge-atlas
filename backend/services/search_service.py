@@ -12,7 +12,7 @@ from config import settings
 from database import get_chroma_collection
 from models import Document
 from schemas import SearchResult
-from utils import pseudo_id
+from utils import legacy_document_key, pseudo_id
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,12 @@ class SearchService:
 
             matches.sort(key=lambda x: x[0], reverse=True)
             results = []
-            for score, doc, text, meta, title, doc_source in matches[:limit]:
+            seen_documents: set[int] = set()
+            for score, doc, text, meta, title, doc_source in matches:
+                logical_id = pseudo_id(legacy_document_key(doc["id"], meta, text))
+                if logical_id in seen_documents:
+                    continue
+                seen_documents.add(logical_id)
                 snippet = self._extract_snippet(text, query)
                 results.append(SearchResult(
                     title=title or "Untitled",
@@ -160,10 +165,12 @@ class SearchService:
                     source=doc_source or source_type or "chromadb",
                     source_type=doc_source or source_type,
                     similarity_score=round(score, 4),
-                    document_id=pseudo_id(doc["id"]),
+                    document_id=logical_id,
                     chunk_id=doc["id"],
                     url=meta.get("url") or meta.get("notion_page_id"),
                 ))
+                if len(results) >= limit:
+                    break
             return results
         except Exception as e:
             logger.error(f"ChromaDB text search error: {e}")
@@ -180,18 +187,19 @@ class SearchService:
             filters = []
             if source_type:
                 filters.append({"source": source_type})
-            if document_id is not None:
-                # Chroma metadata can retain numbers or strings depending on
-                # the original importer; the numeric representation is used by
-                # this application's sync and note writers.
-                filters.append({"document_id": document_id})
+            # Document-scoped retrieval is filtered after querying. Legacy notes
+            # have no document_id metadata, while canonical writers historically
+            # used both strings and integers; a Chroma where clause would miss
+            # one of those representations.
             where_filter = None if not filters else filters[0] if len(filters) == 1 else {"$and": filters}
+            candidate_count = collection.count() if document_id is not None else min(max(limit * 4, limit), collection.count())
             results = collection.query(
-                query_embeddings=[query_embedding], n_results=limit,
+                query_embeddings=[query_embedding], n_results=candidate_count,
                 where=where_filter, include=["documents", "metadatas", "distances"],
             )
 
             search_results = []
+            seen_documents: set[int] = set()
             if results["ids"] and results["ids"][0]:
                 for i, chroma_id in enumerate(results["ids"][0]):
                     metadata = (results["metadatas"][0] or [{}])[i] if results["metadatas"][0] else {}
@@ -219,7 +227,12 @@ class SearchService:
                     # The document API uses the same stable negative ID, so these
                     # citations remain directly readable.
                     if doc_id == 0:
-                        doc_id = pseudo_id(chroma_id)
+                        doc_id = pseudo_id(legacy_document_key(chroma_id, metadata, document))
+                    if document_id is not None and doc_id != document_id:
+                        continue
+                    if doc_id in seen_documents:
+                        continue
+                    seen_documents.add(doc_id)
                     search_results.append(SearchResult(
                         title=metadata.get("title", "Untitled"),
                         snippet=document[:500] if document else "",
@@ -229,6 +242,8 @@ class SearchService:
                         document_id=doc_id, chunk_id=chroma_id,
                         url=metadata.get("url"),
                     ))
+                    if len(search_results) >= limit:
+                        break
             return search_results
         except Exception as e:
             logger.error(f"Vector search error: {e}")
