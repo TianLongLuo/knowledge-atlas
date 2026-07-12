@@ -229,3 +229,18 @@ def test_graph_keeps_one_sided_threshold_qualified_links():
     }
     edges = _proposal_edges(proposals, max_edges=10)
     assert [(edge.source, edge.target) for edge in edges] == [("b", "c"), ("a", "b")]
+
+
+def test_dashboard_and_document_list_share_postgres_deduplication():
+    from models import Document
+    from routers.documents import _deduplicate_postgres_documents
+
+    documents = [
+        Document(source_type="flomo", source_id="note-1", title="Older", raw_content="same"),
+        Document(source_type="flomo", source_id="note-1", title="Newer", raw_content="same"),
+        Document(source_type="manual", title="Standalone", raw_content="unique"),
+        Document(source_type="manual", title="Standalone", raw_content="unique"),
+    ]
+
+    unique = _deduplicate_postgres_documents(documents)
+    assert [document.title for document in unique] == ["Older", "Standalone"]

@@ -8,9 +8,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
-from database import get_chroma_collection, get_db
+from database import get_db
 from models import Document, DocumentChunk, SyncState
-from routers.documents import _get_chroma_docs
+from routers.documents import (
+    _deduplicate_postgres_documents,
+    _get_canonical_document_ids,
+    _get_chroma_docs,
+    _get_legacy_chroma_docs,
+)
+from utils import content_fingerprint
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -20,27 +26,37 @@ async def dashboard_stats(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    pg_documents = (await db.execute(select(func.count(Document.id)))).scalar() or 0
+    pg_documents = (
+        await db.execute(select(Document).order_by(Document.updated_at.desc()))
+    ).scalars().all()
+    unique_pg_documents = _deduplicate_postgres_documents(pg_documents)
     pg_chunks = (await db.execute(select(func.count(DocumentChunk.id)))).scalar() or 0
     latest_sync = (
         await db.execute(select(SyncState).order_by(SyncState.updated_at.desc()).limit(1))
     ).scalar_one_or_none()
     try:
-        chroma = get_chroma_collection().get(include=["metadatas"])
-        metadatas = chroma.get("metadatas") or []
-        # PostgreSQL already counts every synced document and chunk.  Only
-        # standalone Chroma notes (without a document_id) should supplement it.
-        standalone_notes = sum(
-            1 for metadata in metadatas if not (metadata or {}).get("document_id")
+        canonical_ids = await _get_canonical_document_ids(db)
+        canonical_fingerprints = {
+            content_fingerprint(
+                document.title,
+                document.normalized_content or document.raw_content or "",
+                document.source_type,
+            )
+            for document in unique_pg_documents
+        }
+        legacy_documents = _get_legacy_chroma_docs(
+            canonical_ids, canonical_fingerprints
         )
     except Exception:
-        standalone_notes = 0
+        legacy_documents = []
     status = "idle"
     if latest_sync:
         status = {"running": "syncing", "failed": "error"}.get(latest_sync.status, "idle")
     return {
-        "total_documents": pg_documents + standalone_notes,
-        "total_chunks": pg_chunks + standalone_notes,
+        # Match /api/documents exactly: canonical PostgreSQL notes plus grouped,
+        # deduplicated Chroma-only notes.
+        "total_documents": len(unique_pg_documents) + len(legacy_documents),
+        "total_chunks": pg_chunks + len(legacy_documents),
         "last_sync_time": latest_sync.last_synced_at if latest_sync else None,
         "sync_status": status,
     }

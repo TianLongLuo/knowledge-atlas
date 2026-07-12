@@ -127,6 +127,23 @@ def _get_legacy_chroma_docs(
         return []
 
 
+def _deduplicate_postgres_documents(documents: list[Document]) -> list[Document]:
+    """Return the same canonical PostgreSQL notes shown in the document list."""
+    unique_documents: list[Document] = []
+    seen: set[str] = set()
+    for document in documents:
+        key = (
+            f"external:{document.source_type}:{document.source_id}"
+            if document.source_id
+            else f"content:{document.content_hash or content_fingerprint(document.title, document.normalized_content or document.raw_content or '', document.source_type)}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_documents.append(document)
+    return unique_documents
+
+
 def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
     """Given a negative pseudo-ID, return every backing Chroma row and document."""
     docs = _get_legacy_chroma_docs()
@@ -183,18 +200,7 @@ async def list_documents(
     pg_docs = result.scalars().all()
     # PostgreSQL can also contain historical duplicate imports. Keep the newest
     # canonical row for each external identity or exact content fingerprint.
-    unique_pg_docs = []
-    seen_pg: set[str] = set()
-    for doc in pg_docs:
-        key = (
-            f"external:{doc.source_type}:{doc.source_id}"
-            if doc.source_id
-            else f"content:{doc.content_hash or content_fingerprint(doc.title, doc.normalized_content or doc.raw_content or '', doc.source_type)}"
-        )
-        if key in seen_pg:
-            continue
-        seen_pg.add(key)
-        unique_pg_docs.append(doc)
+    unique_pg_docs = _deduplicate_postgres_documents(pg_docs)
     items = [DocumentResponse.model_validate(d) for d in unique_pg_docs]
 
     # Add legacy Chroma-only records (not already in PostgreSQL)
