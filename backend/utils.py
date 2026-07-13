@@ -3,10 +3,30 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
 from schemas import SearchResult
+
+
+def json_object_from_model(raw: str) -> dict:
+    """Parse a JSON object from plain or fenced model output."""
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    try:
+        value = json.loads(cleaned)
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            value = json.loads(match.group(0))
+            return value if isinstance(value, dict) else {}
+        except json.JSONDecodeError:
+            return {}
 
 
 def pseudo_id(chroma_id: str) -> int:

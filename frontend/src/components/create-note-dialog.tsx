@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -13,7 +14,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Plus, Loader2 } from "lucide-react";
-import { createNote } from "@/lib/api";
+import { createNote, getDocumentFilterOptions } from "@/lib/api";
+import { AIWritingAssistant } from "@/components/ai-writing-assistant";
 
 interface Props {
   onCreated?: () => void;
@@ -24,20 +26,27 @@ export function CreateNoteDialog({ onCreated }: Props) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
+  const [category, setCategory] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
+
+  useEffect(() => {
+    void getDocumentFilterOptions().then((data) => setCategories(data.categories.map((item) => item.name))).catch(() => undefined);
+  }, []);
 
   async function handleCreate() {
     if (!title.trim() || !content.trim()) return;
     setLoading(true);
     setError("");
     try {
-      await createNote({ title: title.trim(), content, source: "manual", tags: tags.trim() });
+      await createNote({ title: title.trim(), content, source: "manual", tags: tags.trim(), category });
       setOpen(false);
       setTitle("");
       setContent("");
       setTags("");
+      setCategory("");
       router.refresh();
       onCreated?.();
     } catch (e: unknown) {
@@ -49,41 +58,30 @@ export function CreateNoteDialog({ onCreated }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger>
-        <Button className="gap-2">
-          <Plus className="h-4 w-4" />
-          New note
-        </Button>
+      <DialogTrigger render={<Button className="gap-2" />}>
+        <Plus className="h-4 w-4" />
+        New note
       </DialogTrigger>
-      <DialogContent className="border-border/80 bg-popover/95 text-foreground sm:max-w-3xl">
+      <DialogContent className="max-h-[94vh] overflow-y-auto border-border/80 bg-popover/95 text-foreground sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle>New note</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <Input
-            placeholder="Title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="bg-background/70"
-          />
-          <Textarea
-            placeholder="Content..."
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={16}
-            className="min-h-[42vh] max-h-[65vh] bg-background/70 resize-y leading-7"
-          />
-          <p className="text-right text-xs text-muted-foreground">{content.length.toLocaleString()} characters</p>
-          <Input placeholder="Tags, separated by commas" value={tags} onChange={(event) => setTags(event.target.value)} className="bg-background/70" />
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          <Button
-            onClick={handleCreate}
-            disabled={loading || !title.trim() || !content.trim()}
-            className="w-full"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            {loading ? "Creating..." : "Save to knowledge base"}
-          </Button>
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-4">
+            <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} className="bg-background/70" />
+            <Textarea placeholder="Content..." value={content} onChange={(e) => setContent(e.target.value)} rows={16} className="min-h-[42vh] max-h-[65vh] bg-background/70 resize-y leading-7" />
+            <p className="text-right text-xs text-muted-foreground">{content.length.toLocaleString()} characters</p>
+            <Select value={category} onValueChange={(value) => setCategory(value || "")}>
+              <SelectTrigger><SelectValue placeholder="Primary category (optional)" /></SelectTrigger>
+              <SelectContent>{categories.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+            </Select>
+            <Input placeholder="Secondary tags, separated by commas" value={tags} onChange={(event) => setTags(event.target.value)} className="bg-background/70" />
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            <Button onClick={handleCreate} disabled={loading || !title.trim() || !content.trim()} className="w-full">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}{loading ? "Creating..." : "Save to knowledge base"}
+            </Button>
+          </div>
+          <AIWritingAssistant title={title} content={content} onApplyTitle={setTitle} />
         </div>
       </DialogContent>
     </Dialog>

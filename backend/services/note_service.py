@@ -38,6 +38,7 @@ class NoteService:
         content: str,
         source: str = "manual",
         tags: str = "",
+        category: str = "",
         db: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """Create a canonical document with Chroma chunks and optional Notion write.
@@ -61,7 +62,7 @@ class NoteService:
                 title=title.strip(),
                 raw_content=content,
                 normalized_content=content,
-                metadata_={"tags": tags, "created_by": "manual"},
+                metadata_={"tags": tags, "category": category.strip(), "created_by": "manual"},
                 content_hash=content_hash,
                 created_at=now,
                 updated_at=now,
@@ -95,6 +96,7 @@ class NoteService:
                         "chunk_index": chunk.index,
                         "created_at": now.isoformat(),
                         "tags": tags,
+                        "category": category.strip(),
                     }],
                 )
                 session.add(DocumentChunk(

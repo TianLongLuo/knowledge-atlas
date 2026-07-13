@@ -27,6 +27,7 @@ from schemas import (
 from services.note_service import note_service
 from utils import (
     content_fingerprint,
+    dominant_group,
     legacy_document_key,
     merge_chunk_texts,
     normalize_document_id,
@@ -195,6 +196,28 @@ def _document_tags(item: DocumentResponse) -> list[str]:
     return normalized_tags(item.metadata_ or {})
 
 
+def _document_category(item: DocumentResponse) -> str:
+    metadata = item.metadata_ or {}
+    explicit = str(metadata.get("category") or metadata.get("group") or "").strip()
+    if explicit:
+        return explicit[:40]
+    content = item.normalized_content or item.raw_content or ""
+    return dominant_group(content, item.title, metadata)
+
+
+def _document_matches_search(item: DocumentResponse, query: str) -> bool:
+    needle = query.casefold().strip()
+    if not needle:
+        return True
+    searchable = "\n".join([
+        item.title,
+        item.normalized_content or item.raw_content or "",
+        _document_category(item),
+        " ".join(_document_tags(item)),
+    ]).casefold()
+    return needle in searchable
+
+
 def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
     """Given a negative pseudo-ID, return every backing Chroma row and document."""
     docs = _get_legacy_chroma_docs()
@@ -225,6 +248,7 @@ async def list_documents(
     date_to: str | None = Query(default=None),
     date_field: Literal["note_date", "system_created"] = Query(default="note_date"),
     tag: str | None = Query(default=None),
+    category: str | None = Query(default=None),
     sort_by: Literal["note_date", "system_created", "updated_at", "title"] = Query(default="note_date"),
     sort_order: Literal["asc", "desc"] = Query(default="desc"),
     db: AsyncSession = Depends(get_db),
@@ -234,13 +258,6 @@ async def list_documents(
     base_query = select(Document)
     if source_type and source_type != "chromadb":
         base_query = base_query.where(Document.source_type == source_type)
-    if search:
-        base_query = base_query.where(
-            or_(
-                Document.title.ilike(f"%{search}%"),
-                Document.normalized_content.ilike(f"%{search}%"),
-            )
-        )
     result = await db.execute(base_query.order_by(Document.updated_at.desc()))
     pg_docs = result.scalars().all()
     # PostgreSQL can also contain historical duplicate imports. Keep the newest
@@ -256,20 +273,14 @@ async def list_documents(
             for d in unique_pg_docs
         }
         chroma_items = _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints)
-        if search:
-            s = search.lower()
-            chroma_items = [
-                c for c in chroma_items
-                if s in c["title"].lower() or s in (c["normalized_content"] or "").lower()
-            ]
         for ci in chroma_items:
             items.append(DocumentResponse(
                 id=ci["id"],
                 source_type=ci["source_type"],
                 source_id=ci["source_id"],
                 title=ci["title"],
-                raw_content=ci["raw_content"][:500] if ci["raw_content"] else None,
-                normalized_content=ci["normalized_content"][:500] if ci["normalized_content"] else None,
+                raw_content=ci["raw_content"],
+                normalized_content=ci["normalized_content"],
                 metadata=ci["metadata"],
                 content_hash=ci["content_hash"],
                 created_at=ci["created_at"],
@@ -282,6 +293,11 @@ async def list_documents(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid date filter; expected YYYY-MM-DD") from exc
 
+    if search:
+        items = [item for item in items if _document_matches_search(item, search)]
+    if category:
+        normalized_category = category.casefold()
+        items = [item for item in items if _document_category(item).casefold() == normalized_category]
     if tag:
         normalized_tag = tag.casefold()
         items = [item for item in items if normalized_tag in {value.casefold() for value in _document_tags(item)}]
@@ -306,6 +322,9 @@ async def list_documents(
             reverse=reverse,
         )
 
+    for item in items:
+        item.metadata_ = {**(item.metadata_ or {}), "_category": _document_category(item)}
+
     total = len(items)
     start = (page - 1) * page_size
     items = items[start:start + page_size]
@@ -319,11 +338,24 @@ async def document_filter_options(
     _user: str = Depends(get_current_user),
 ):
     pg_documents = (await db.execute(select(Document))).scalars().all()
-    tags = {tag for document in pg_documents for tag in normalized_tags(document.metadata_ or {})}
+    responses = [DocumentResponse.model_validate(document) for document in pg_documents]
     canonical_ids = {document.id for document in pg_documents}
     for document in _get_legacy_chroma_docs(canonical_ids):
-        tags.update(normalized_tags(document.get("metadata") or {}))
-    return {"tags": sorted(tags, key=str.casefold)}
+        responses.append(DocumentResponse(
+            id=document["id"], source_type=document["source_type"], source_id=document["source_id"],
+            title=document["title"], raw_content=document["raw_content"],
+            normalized_content=document["normalized_content"], metadata=document["metadata"],
+            created_at=document["created_at"], updated_at=document["updated_at"],
+        ))
+    category_tags: dict[str, set[str]] = {}
+    for document in responses:
+        category_tags.setdefault(_document_category(document), set()).update(_document_tags(document))
+    return {
+        "categories": [
+            {"name": category, "tags": sorted(tags, key=str.casefold)}
+            for category, tags in sorted(category_tags.items(), key=lambda item: item[0].casefold())
+        ]
+    }
 
 
 # ── Get detail ────────────────────────────────────────────────────

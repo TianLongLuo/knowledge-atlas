@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownContent } from "@/components/markdown-content";
+import { AIWritingAssistant } from "@/components/ai-writing-assistant";
 import { Bot, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
 
 interface NoteReaderContextValue {
@@ -107,7 +108,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     <NoteReaderContext.Provider value={value}>
       {children}
       <Dialog open={Boolean(documentId)} onOpenChange={(open) => { if (!open) closeDocument(); }}>
-        <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden border-white/90 bg-white/95 p-0 shadow-[0_30px_100px_rgba(56,76,120,0.25)] backdrop-blur-xl sm:max-w-5xl">
+        <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden border-white/90 bg-white/95 p-0 shadow-[0_30px_100px_rgba(56,76,120,0.25)] backdrop-blur-xl sm:max-w-6xl">
           <div className="border-b bg-[linear-gradient(120deg,rgba(219,238,255,.75),rgba(255,239,220,.58),rgba(255,225,239,.55))] px-7 py-5">
             <DialogHeader>
               {editing ? (
@@ -123,7 +124,10 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
             {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
-              <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] resize-y bg-white text-sm leading-7" />
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] resize-y bg-white text-sm leading-7" />
+                <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} />
+              </div>
             ) : (
               <MarkdownContent>{document.content || "This note has no readable content."}</MarkdownContent>
             ))}

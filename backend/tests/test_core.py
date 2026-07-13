@@ -260,3 +260,95 @@ def test_document_note_date_prefers_source_metadata():
 
     assert _document_datetime(document, "note_date").isoformat() == "2024-02-03T10:30:00+00:00"
     assert _document_datetime(document, "system_created").isoformat() == "2026-07-12T10:00:00+00:00"
+
+
+def test_document_search_includes_category_and_tags():
+    from routers.documents import _document_matches_search
+    from schemas import DocumentResponse
+
+    document = DocumentResponse(
+        id=7, source_type="manual", title="A plain title", raw_content="ordinary body",
+        metadata={"category": "Business", "tags": "pricing, strategy"},
+    )
+    assert _document_matches_search(document, "Business")
+    assert _document_matches_search(document, "pricing")
+    assert not _document_matches_search(document, "grammar")
+
+
+def test_graph_composite_score_uses_metadata_only_as_semantic_boost():
+    from routers.graph import GraphNode, _composite_link_score
+
+    source = GraphNode(id="a", label="A", group="Business", document_id=1, tags=["pricing"])
+    related = GraphNode(id="b", label="B", group="Business", document_id=2, tags=["pricing"])
+    unrelated = GraphNode(id="c", label="C", group="Business", document_id=3, tags=["pricing"])
+
+    boosted = _composite_link_score(0.36, source, related, 0.45)
+    assert boosted is not None and boosted[0] > 0.36
+    assert _composite_link_score(0.05, source, unrelated, 0.45) is None
+
+
+def test_writing_assist_requires_explicit_external_processing_consent():
+    from schemas import WritingAssistRequest
+
+    with pytest.raises(ValidationError):
+        WritingAssistRequest(title="Draft", content="This is long enough for review.")
+    request = WritingAssistRequest(
+        title="Draft",
+        content="This is long enough for review.",
+        allow_external_processing=True,
+    )
+    assert request.allow_external_processing is True
+
+
+def test_writing_assist_parses_fenced_json():
+    from utils import json_object_from_model
+
+    parsed = json_object_from_model('```json\n{"suggested_titles": ["One"]}\n```')
+    assert parsed["suggested_titles"] == ["One"]
+
+
+def test_writing_assist_limits_external_draft_and_history(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from routers import agent
+    from schemas import WritingAssistRequest
+
+    captured: dict = {}
+
+    async def fake_search(self, **_kwargs):
+        return [
+            SearchResult(
+                title=f"Reference {index}", snippet="s" * 400, source="manual",
+                source_type="manual", similarity_score=0.9 - index * 0.01,
+                document_id=index, chunk_id=f"chunk-{index}",
+            )
+            for index in range(1, 8)
+        ]
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.chat = self
+            self.completions = self
+
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            message = SimpleNamespace(content='{"suggested_titles":["Better title"],"directions":[],"logic_issues":[],"grammar_issues":[]}')
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(agent.SearchService, "search", fake_search)
+    monkeypatch.setattr(agent, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(agent.settings, "deepseek_api_key", "test-key")
+    response = asyncio.run(agent.writing_assist(
+        WritingAssistRequest(
+            title="Draft", content="x" * 40_000, document_id=1,
+            allow_external_processing=True,
+        ),
+        db=object(), _user="test",
+    ))
+
+    outbound = captured["messages"][1]["content"]
+    assert "x" * 30_000 in outbound
+    assert "x" * 30_001 not in outbound
+    assert outbound.count("Reference ") == 10  # title + label for five references
+    assert len(response.historical_references) == 5
+    assert response.suggested_titles == ["Better title"]

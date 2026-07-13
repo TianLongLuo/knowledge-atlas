@@ -73,7 +73,7 @@ export default function SearchPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Knowledge Search</h1>
         <p className="text-muted-foreground mt-1">
-          Search across your documents and semantic chunks.
+          Search titles, content, categories, tags, and semantic meaning.
         </p>
       </div>
 
@@ -84,7 +84,7 @@ export default function SearchPage() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Enter search keywords..."
+                placeholder="Search content, category, or tag..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="pl-9"

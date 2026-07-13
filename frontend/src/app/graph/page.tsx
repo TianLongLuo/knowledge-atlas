@@ -202,7 +202,7 @@ export default function GraphPage() {
         <div>
           <h1 className="text-2xl font-bold">Knowledge Graph</h1>
           <p className="text-sm text-muted-foreground">
-            {data?.stats.node_count || 0} notes · {data?.stats.edge_count || 0} trusted semantic links · {typeEntries.length} types
+            {data?.stats.node_count || 0} notes · {data?.stats.edge_count || 0} meaning + category + tag links · {typeEntries.length} types
           </p>
         </div>
         <div className="relative w-72">
@@ -233,7 +233,7 @@ export default function GraphPage() {
               backgroundColor="rgba(251,252,255,0.30)"
               nodeId="id"
               nodeVal={(node) => Math.max(2.5, Math.min(10, 2.5 + node.degree * 0.75))}
-              nodeLabel={(node) => `${node.label}<br/>${node.node_type} · ${node.degree} links`}
+              nodeLabel={(node) => `${node.label}<br/>${node.group} · ${node.node_type} · ${node.degree} links${node.tags.length ? `<br/>#${node.tags.join(" · #")}` : ""}`}
               nodeColor={(node) => typeColor(node.node_type)}
               linkColor={(edge) => {
                 if (!focusedId) return "rgba(79,111,163,0.42)";
@@ -245,6 +245,7 @@ export default function GraphPage() {
                 if (!focusedId) return 0.85 + edge.weight * 0.55;
                 return isFocused ? 1.35 + edge.weight * 2.1 : 0.3;
               }}
+              linkLabel={(edge) => `${edge.label}<br/>combined relevance ${Math.round(edge.weight * 100)}%`}
               linkDirectionalParticles={(edge) => {
                 if (prefersReducedMotion.current || !focusedId) return 0;
                 const isFocused = endpointId(edge.source) === focusedId || endpointId(edge.target) === focusedId;

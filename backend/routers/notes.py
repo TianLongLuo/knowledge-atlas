@@ -28,6 +28,7 @@ class CreateNoteRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2_000_000)
     source: str = Field(default="manual", min_length=1, max_length=64)
     tags: str = Field(default="", max_length=4000)
+    category: str = Field(default="", max_length=80)
 
 
 class NoteResponse(BaseModel):
@@ -99,6 +100,7 @@ async def create_note(
             content=body.content,
             source=body.source,
             tags=body.tags,
+            category=body.category,
             db=db,
         )
     except Exception as exc:

@@ -12,7 +12,7 @@ from config import settings
 from database import get_chroma_collection
 from models import Document
 from schemas import SearchResult
-from utils import legacy_document_key, pseudo_id
+from utils import dominant_group, legacy_document_key, normalized_tags, pseudo_id
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +100,7 @@ class SearchService:
         self, query: str, source_type: str | None, date_from: str | None,
         date_to: str | None, limit: int, db: AsyncSession,
     ) -> list[SearchResult]:
-        pattern = f"%{query}%"
-        doc_query = select(Document).where(
-            Document.normalized_content.ilike(pattern) | Document.title.ilike(pattern)
-        )
+        doc_query = select(Document)
         if source_type:
             doc_query = doc_query.where(Document.source_type == source_type)
         if date_from:
@@ -113,16 +110,38 @@ class SearchService:
             if len(date_to) <= 10:
                 parsed_to = datetime.combine(parsed_to.date(), time.max)
             doc_query = doc_query.where(Document.created_at <= parsed_to)
-        doc_query = doc_query.limit(limit)
         result = await db.execute(doc_query)
-        docs = result.scalars().all()
+        candidates = result.scalars().all()
+
+        query_lower = query.casefold().strip()
+        docs: list[Document] = []
+        for doc in candidates:
+            metadata = doc.metadata_ or {}
+            content = doc.normalized_content or doc.raw_content or ""
+            searchable = "\n".join([
+                doc.title,
+                content,
+                dominant_group(content, doc.title, metadata),
+                " ".join(normalized_tags(metadata)),
+            ]).casefold()
+            if query_lower in searchable:
+                docs.append(doc)
+            if len(docs) >= limit:
+                break
 
         results = []
         for doc in docs:
-            snippet = self._extract_snippet(doc.normalized_content or doc.raw_content or "", query)
+            content = doc.normalized_content or doc.raw_content or ""
+            tags = normalized_tags(doc.metadata_ or {})
+            snippet = self._extract_snippet(content, query)
+            tag_match = query_lower in {tag.casefold() for tag in tags}
+            category_match = query_lower == dominant_group(content, doc.title, doc.metadata_ or {}).casefold()
+            if tag_match:
+                snippet = f"Tag: {query} · {snippet}"
             results.append(SearchResult(
                 title=doc.title, snippet=snippet, source=doc.source_type,
-                source_type=doc.source_type, similarity_score=0.5,
+                source_type=doc.source_type,
+                similarity_score=0.98 if tag_match else 0.92 if category_match else 0.5,
                 document_id=doc.id, chunk_id=None,
                 url=(doc.metadata_ or {}).get("url"),
             ))
@@ -144,10 +163,18 @@ class SearchService:
                     continue
                 text_lower = text.lower()
                 title = meta.get("title", "")
-                if query_lower in text_lower or query_lower in title.lower():
+                tags = normalized_tags(meta)
+                category = dominant_group(text, title, meta)
+                metadata_text = f"{category} {' '.join(tags)}".casefold()
+                if query_lower in text_lower or query_lower in title.lower() or query_lower in metadata_text:
                     # Score by position: earlier match = higher score
                     pos = text_lower.find(query_lower)
-                    score = 1.0 if pos == 0 else max(0.3, 1.0 - pos / max(len(text_lower), 1))
+                    if query_lower in {tag.casefold() for tag in tags}:
+                        score = 0.98
+                    elif query_lower == category.casefold():
+                        score = 0.92
+                    else:
+                        score = 1.0 if pos == 0 else max(0.3, 1.0 - max(pos, 0) / max(len(text_lower), 1))
                     matches.append((score, doc, text, meta, title, doc_source))
 
             matches.sort(key=lambda x: x[0], reverse=True)

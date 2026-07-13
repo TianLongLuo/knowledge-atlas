@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import json
-import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -29,9 +28,10 @@ from models import AgentMemory
 from schemas import (
     AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation,
     MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
+    WritingAssistRequest, WritingAssistResponse, WritingIssue, WritingReference,
 )
 from services.search_service import SearchService, SearchResult
-from utils import is_broad_identity_question, legacy_document_key, mmr_diversify, pseudo_id, _IDENTITY_FACETS
+from utils import is_broad_identity_question, json_object_from_model, legacy_document_key, mmr_diversify, pseudo_id, _IDENTITY_FACETS
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -399,6 +399,108 @@ async def agent_status(_user: str = Depends(get_current_user)):
 
 
 # ── Main Q&A endpoint ─────────────────────────────────────────────
+
+
+@router.post("/writing-assist", response_model=WritingAssistResponse)
+async def writing_assist(
+    body: WritingAssistRequest,
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    """Review a draft using DeepSeek and knowledge-base references."""
+    search_results = await SearchService().search(
+        query=f"{body.title}\n{body.content[:2400]}",
+        search_type="hybrid",
+        top_k=12,
+        db=db,
+    )
+    references: list[WritingReference] = []
+    seen_documents: set[int] = set()
+    for result in search_results:
+        if result.document_id == body.document_id or result.document_id in seen_documents:
+            continue
+        seen_documents.add(result.document_id)
+        references.append(WritingReference(
+            document_id=result.document_id,
+            title=result.title,
+            connection=result.snippet[:240],
+            relevance=round(result.similarity_score, 3),
+        ))
+        if len(references) >= 5:
+            break
+
+    if not settings.deepseek_api_key:
+        raise HTTPException(status_code=503, detail="DeepSeek is not configured for writing assistance.")
+
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        timeout=settings.deepseek_timeout_seconds,
+        max_retries=2,
+    )
+    history_context = "\n\n".join(
+        f"Reference {index + 1}: {reference.title}\n{reference.connection}"
+        for index, reference in enumerate(references)
+    ) or "No sufficiently relevant historical notes were found."
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a private writing coach grounded in the user's knowledge base. "
+                        "Review only the supplied draft and references; never invent facts. Return valid JSON with keys "
+                        "suggested_titles (max 4 strings), directions (max 4 strings), logic_issues and "
+                        "grammar_issues (max 6 objects each; keys: excerpt, issue, suggestion). Be concise, "
+                        "specific, constructive, and use the draft's language. Do not call stylistic preference a grammar error."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Current title: {body.title or '(untitled)'}\n\nDraft:\n{body.content[:30_000]}\n\n"
+                        f"Relevant historical notes (reference only):\n{history_context}"
+                    ),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=1800,
+        )
+    except Exception as exc:
+        logger.exception("Writing assistance request failed")
+        raise HTTPException(status_code=502, detail=deepseek_error_message(exc)) from exc
+
+    payload = json_object_from_model(response.choices[0].message.content or "")
+
+    def strings(key: str, limit: int) -> list[str]:
+        values = payload.get(key) or []
+        if not isinstance(values, list):
+            return []
+        return [str(value).strip()[:500] for value in values if str(value).strip()][:limit]
+
+    def issues(key: str) -> list[WritingIssue]:
+        values = payload.get(key) or []
+        if not isinstance(values, list):
+            return []
+        parsed: list[WritingIssue] = []
+        for value in values[:6]:
+            if not isinstance(value, dict) or not str(value.get("issue") or "").strip():
+                continue
+            parsed.append(WritingIssue(
+                excerpt=str(value.get("excerpt") or "")[:300],
+                issue=str(value.get("issue") or "")[:500],
+                suggestion=str(value.get("suggestion") or "")[:700],
+            ))
+        return parsed
+
+    return WritingAssistResponse(
+        suggested_titles=strings("suggested_titles", 4),
+        directions=strings("directions", 4),
+        logic_issues=issues("logic_issues"),
+        grammar_issues=issues("grammar_issues"),
+        historical_references=references,
+    )
 
 
 @router.post("/ask", response_model=AskResponse)

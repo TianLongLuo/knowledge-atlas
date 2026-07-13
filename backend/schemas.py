@@ -116,6 +116,34 @@ class AskResponse(BaseModel):
     session_id: str
 
 
+class WritingAssistRequest(BaseModel):
+    title: str = Field(default="", max_length=1024)
+    content: str = Field(min_length=20, max_length=120_000)
+    document_id: int | None = None
+    allow_external_processing: Literal[True]
+
+
+class WritingIssue(BaseModel):
+    excerpt: str = ""
+    issue: str
+    suggestion: str
+
+
+class WritingReference(BaseModel):
+    document_id: int
+    title: str
+    connection: str
+    relevance: float
+
+
+class WritingAssistResponse(BaseModel):
+    suggested_titles: list[str] = Field(default_factory=list)
+    directions: list[str] = Field(default_factory=list)
+    logic_issues: list[WritingIssue] = Field(default_factory=list)
+    grammar_issues: list[WritingIssue] = Field(default_factory=list)
+    historical_references: list[WritingReference] = Field(default_factory=list)
+
+
 class AgentStatusResponse(BaseModel):
     """Non-sensitive readiness details for the AI assistant."""
 

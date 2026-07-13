@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AIWritingAssistant } from "@/components/ai-writing-assistant";
 import {
   ArrowLeft, FileText, Calendar, HardDrive,
   Pencil, Trash2, Save, X, Loader2,
@@ -216,12 +217,10 @@ export default function DocumentDetailPage() {
         </CardHeader>
         <CardContent>
           {editing ? (
-            <Textarea
-              value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              className="min-h-[400px] text-sm bg-background/70 resize-y"
-              placeholder="Document content..."
-            />
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] text-sm bg-background/70 resize-y" placeholder="Document content..." />
+              <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />
+            </div>
           ) : (
             <div className="note-body max-w-none whitespace-pre-wrap text-sm leading-relaxed">
               {document.content || "No content"}

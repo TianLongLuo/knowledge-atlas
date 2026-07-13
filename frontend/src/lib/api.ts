@@ -68,6 +68,7 @@ export interface DocumentItem {
   chunk_count: number;
   tags: string[];
   note_at: string;
+  category: string;
 }
 export interface DocumentListResponse { items: DocumentItem[]; total: number; page: number; page_size: number }
 export interface ChunkItem { id: number; document_id: number; chunk_index: number; chunk_text: string; token_count: number }
@@ -102,12 +103,14 @@ function mapDocument(doc: RawDocument): DocumentItem {
     chunk_count: doc.chunks?.length || 0,
     tags,
     note_at: String(noteAt || doc.created_at || doc.updated_at || new Date(0).toISOString()),
+    category: String(doc.metadata?._category || doc.metadata?.category || doc.metadata?.group || "Uncategorized"),
   };
 }
 
 export async function getDocuments(params: {
   page?: number; page_size?: number; search?: string; source_type?: string; date_from?: string; date_to?: string;
   date_field?: "note_date" | "system_created"; tag?: string;
+  category?: string;
   sort_by?: "note_date" | "system_created" | "updated_at" | "title"; sort_order?: "asc" | "desc";
 }): Promise<DocumentListResponse> {
   const query = new URLSearchParams();
@@ -117,7 +120,7 @@ export async function getDocuments(params: {
 }
 
 export function getDocumentFilterOptions() {
-  return apiFetch<{ tags: string[] }>("/documents/filter-options");
+  return apiFetch<{ categories: Array<{ name: string; tags: string[] }> }>("/documents/filter-options");
 }
 
 export async function getDocument(id: string): Promise<DocumentDetail> {
@@ -139,7 +142,7 @@ export function updateDocument(id: string, data: { title?: string; content?: str
 export function deleteDocument(id: string) {
   return apiFetch<{ message: string; id: number }>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
-export function createNote(data: { title: string; content: string; source?: string; tags?: string }) {
+export function createNote(data: { title: string; content: string; source?: string; tags?: string; category?: string }) {
   return apiFetch<{ id: string; title: string }>("/notes", { method: "POST", body: JSON.stringify(data) });
 }
 
@@ -207,6 +210,22 @@ export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
     document_id: String(citation.document_id), document_title: citation.document_title,
     content: citation.chunk_snippet, relevance_score: citation.similarity_score, source_url: citation.source_url,
   })) };
+}
+
+export interface WritingIssue { excerpt: string; issue: string; suggestion: string }
+export interface WritingReference { document_id: number; title: string; connection: string; relevance: number }
+export interface WritingAssistResponse {
+  suggested_titles: string[];
+  directions: string[];
+  logic_issues: WritingIssue[];
+  grammar_issues: WritingIssue[];
+  historical_references: WritingReference[];
+}
+export function getWritingAssistance(data: { title: string; content: string; document_id?: number }) {
+  return apiFetch<WritingAssistResponse>("/agent/writing-assist", {
+    method: "POST",
+    body: JSON.stringify({ ...data, allow_external_processing: true }),
+  });
 }
 
 interface RawSyncState { source_type: string; source_id: string; status: string; last_synced_at: string | null; error_message: string | null }

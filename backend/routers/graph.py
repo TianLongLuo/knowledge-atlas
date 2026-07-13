@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -90,11 +91,87 @@ def _proposal_edges(proposals: dict[tuple[str, str], dict[str, object]], max_edg
     edges = [
         GraphEdge(
             source=pair[0], target=pair[1], weight=round(float(value["weight"]), 4),
-            label=f"semantic {float(value['weight']):.2f}",
+            label=str(value.get("label") or f"semantic {float(value['weight']):.2f}"),
+            edge_type="composite",
         )
         for pair, value in proposals.items()
     ]
     return sorted(edges, key=lambda edge: edge.weight, reverse=True)[:max_edges]
+
+
+def _normalized_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    return [value / norm for value in vector] if norm else vector
+
+
+def _composite_link_score(
+    semantic: float,
+    source: GraphNode,
+    target: GraphNode,
+    min_similarity: float,
+) -> tuple[float, str] | None:
+    """Blend meaning, category and tags without allowing metadata-only links."""
+    source_tags = {tag.casefold() for tag in source.tags}
+    target_tags = {tag.casefold() for tag in target.tags}
+    shared_tags = source_tags & target_tags
+    all_tags = source_tags | target_tags
+    tag_overlap = len(shared_tags) / len(all_tags) if all_tags else 0.0
+    same_category = bool(source.group and source.group == target.group)
+
+    # Metadata may strengthen a meaningful relationship, but never create one
+    # when the note bodies are semantically far apart.
+    eligible = (
+        semantic >= min_similarity
+        or (shared_tags and semantic >= max(0.18, min_similarity - 0.16))
+        or (same_category and semantic >= max(0.22, min_similarity - 0.09))
+    )
+    if not eligible:
+        return None
+
+    score = min(1.0, semantic * 0.78 + tag_overlap * 0.14 + (0.08 if same_category else 0.0))
+    signals = [f"meaning {semantic:.2f}"]
+    if same_category:
+        signals.append(f"category {source.group}")
+    if shared_tags:
+        signals.append("tags " + ", ".join(sorted(shared_tags)[:3]))
+    return score, " · ".join(signals)
+
+
+def _build_composite_proposals(
+    nodes_by_id: dict[str, GraphNode],
+    vectors_by_id: dict[str, list[float]],
+    min_similarity: float,
+    neighbors: int,
+) -> dict[tuple[str, str], dict[str, object]]:
+    normalized = {node_id: _normalized_vector(vector) for node_id, vector in vectors_by_id.items()}
+    candidates: dict[str, list[tuple[float, str, str]]] = {node_id: [] for node_id in normalized}
+    node_ids = list(normalized)
+    for source_index, source_id in enumerate(node_ids):
+        for target_id in node_ids[source_index + 1:]:
+            semantic = max(0.0, min(1.0, sum(
+                left * right for left, right in zip(normalized[source_id], normalized[target_id])
+            )))
+            scored = _composite_link_score(
+                semantic, nodes_by_id[source_id], nodes_by_id[target_id], min_similarity
+            )
+            if scored is None:
+                continue
+            weight, label = scored
+            candidates[source_id].append((weight, target_id, label))
+            candidates[target_id].append((weight, source_id, label))
+
+    proposals: dict[tuple[str, str], dict[str, object]] = {}
+    for source_id, links in candidates.items():
+        for weight, target_id, label in sorted(links, reverse=True)[:neighbors]:
+            pair = tuple(sorted((source_id, target_id)))
+            existing = proposals.get(pair)
+            if existing is None or weight > float(existing["weight"]):
+                proposals[pair] = {"weight": weight, "label": label, "directions": {source_id}}
+            else:
+                directions = existing.get("directions")
+                if isinstance(directions, set):
+                    directions.add(source_id)
+    return proposals
 
 
 @router.get("/full", response_model=GraphResponse)
@@ -105,11 +182,7 @@ async def get_full_graph(
     max_edges: int = Query(default=settings.graph_max_edges, ge=10, le=5000),
     _user: str = Depends(get_current_user),
 ):
-    """Return an ANN Top-K semantic graph.
-
-    Chroma's HNSW index finds a small neighbor set for each node.  This avoids
-    the previous O(n²) Python cosine loop and bounds graph density explicitly.
-    """
+    """Return a document graph blending semantic meaning, categories and tags."""
     cache_key = (limit, round(min_similarity, 3), neighbors, max_edges)
     cached = _graph_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < 30:
@@ -188,45 +261,10 @@ async def get_full_graph(
                 ])
                 query_node_ids.append(node_id)
 
-        proposals: dict[tuple[str, str], dict[str, object]] = {}
-        if query_embeddings:
-            nearest = collection.query(
-                query_embeddings=query_embeddings,
-                # Oversample because the nearest records may be sibling chunks
-                # from the same document and are collapsed below.
-                n_results=min(neighbors * 8 + 1, collection.count()),
-                include=["distances", "metadatas", "documents"],
-            )
-            neighbor_ids = nearest.get("ids") or []
-            neighbor_distances = nearest.get("distances") or []
-            neighbor_metadatas = nearest.get("metadatas") or []
-            neighbor_documents = nearest.get("documents") or []
-            allowed = set(nodes_by_id)
-            for source_index, source_id in enumerate(query_node_ids):
-                if source_index >= len(neighbor_ids):
-                    continue
-                distances = neighbor_distances[source_index] if source_index < len(neighbor_distances) else []
-                metadata_row = neighbor_metadatas[source_index] if source_index < len(neighbor_metadatas) else []
-                document_row = neighbor_documents[source_index] if source_index < len(neighbor_documents) else []
-                accepted = 0
-                for target_index, target_chroma_id in enumerate(neighbor_ids[source_index]):
-                    target_metadata = metadata_row[target_index] if target_index < len(metadata_row) else {}
-                    target_content = document_row[target_index] if target_index < len(document_row) else ""
-                    target_id, _ = _node_identity(target_chroma_id, target_metadata or {}, target_content or "")
-                    if target_id == source_id or target_id not in allowed or target_index >= len(distances):
-                        continue
-                    similarity = max(0.0, min(1.0, 1.0 - float(distances[target_index])))
-                    if similarity < min_similarity:
-                        continue
-                    pair = tuple(sorted((source_id, target_id)))
-                    proposal = proposals.setdefault(pair, {"weight": 0.0, "directions": set()})
-                    proposal["weight"] = max(float(proposal["weight"]), similarity)
-                    directions = proposal["directions"]
-                    if isinstance(directions, set):
-                        directions.add(source_id)
-                    accepted += 1
-                    if accepted >= neighbors:
-                        break
+        vectors_by_id = dict(zip(query_node_ids, query_embeddings))
+        proposals = _build_composite_proposals(
+            nodes_by_id, vectors_by_id, min_similarity, neighbors
+        )
 
         # Keep every threshold-qualified Top-K proposal. Requiring mutual KNN
         # made sparse or heterogeneous corpora return nodes with zero visible
