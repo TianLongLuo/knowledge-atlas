@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  getDocument, updateDocument, deleteDocument,
+  getDocument, updateDocument, deleteDocument, suggestDocumentTags,
   DocumentDetail,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import {
   ArrowLeft, FileText, Calendar, HardDrive,
   Pencil, Trash2, Save, X, Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 
 export default function DocumentDetailPage() {
   const params = useParams();
@@ -30,6 +31,7 @@ export default function DocumentDetailPage() {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
+  const [editTags, setEditTags] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -41,6 +43,7 @@ export default function DocumentDetailPage() {
       setDocument(doc);
       setEditTitle(doc.title);
       setEditContent(doc.content || "");
+      setEditTags(doc.tags.join(", "));
     } catch (err) {
       console.error("Failed to load:", err);
     } finally {
@@ -50,6 +53,14 @@ export default function DocumentDetailPage() {
 
   useEffect(() => { loadDoc(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const addTagsInBackground = () => {
+    if (editTags.split(/[,，]/).some((tag) => tag.trim()) || !editContent.trim()) return;
+    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
+    void suggestDocumentTags({ title: editTitle, content: editContent })
+      .then(async ({ tags }) => { if (tags.length) await updateDocument(id, { tags: tags.join(", ") }); })
+      .catch(() => undefined);
+  };
+
   const handleSave = async () => {
     if (!editTitle.trim()) return;
     setSaving(true);
@@ -57,6 +68,7 @@ export default function DocumentDetailPage() {
       await updateDocument(id, {
         title: editTitle.trim(),
         content: editContent,
+        tags: editTags,
       });
       setEditing(false);
       await loadDoc();
@@ -115,7 +127,7 @@ export default function DocumentDetailPage() {
     <div className="space-y-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.push("/documents")}>
+        <Button variant="ghost" size="icon" onClick={() => { addTagsInBackground(); router.push("/documents"); }}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
 
@@ -127,6 +139,7 @@ export default function DocumentDetailPage() {
               className="text-xl font-bold bg-background/70"
               placeholder="Title"
             />
+            <Input value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="Tags, separated by commas" className="bg-background/70" />
           </div>
         ) : (
           <div className="flex-1">
@@ -134,6 +147,7 @@ export default function DocumentDetailPage() {
             <div className="flex items-center gap-2 mt-1">
               <Badge variant="outline">{sourceLabel(document.source_type)}</Badge>
               {document.status && <Badge variant="secondary">{document.status}</Badge>}
+              {document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}
             </div>
           </div>
         )}
@@ -146,7 +160,7 @@ export default function DocumentDetailPage() {
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
                 Save
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setEditTitle(document.title); setEditContent(document.content || ""); }}>
+              <Button variant="ghost" size="sm" onClick={() => { addTagsInBackground(); setEditing(false); setEditTitle(document.title); setEditContent(document.content || ""); setEditTags(document.tags.join(", ")); }}>
                 <X className="h-4 w-4 mr-1" />Cancel
               </Button>
             </>
@@ -217,7 +231,7 @@ export default function DocumentDetailPage() {
         </CardHeader>
         <CardContent>
           {editing ? (
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="relative">
               <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] text-sm bg-background/70 resize-y" placeholder="Document content..." />
               <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />
             </div>

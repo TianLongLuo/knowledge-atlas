@@ -58,6 +58,10 @@ def content_fingerprint(title: str, content: str, source: str = "") -> str:
 
 def legacy_document_key(chroma_id: str, metadata: dict[str, Any], content: str = "") -> str:
     """Map legacy Chroma rows/chunks to one stable logical note identity."""
+    stable_key = str(metadata.get("atlas_legacy_key") or "").strip()
+    if stable_key:
+        return stable_key
+
     raw_document_id = normalize_document_id(metadata.get("document_id"))
     if raw_document_id > 0:
         return f"document:{raw_document_id}"

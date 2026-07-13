@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -104,6 +105,35 @@ def _normalized_vector(vector: list[float]) -> list[float]:
     return [value / norm for value in vector] if norm else vector
 
 
+_TOPIC_FAMILIES = {
+    "english-speaking": (
+        "英语口语", "口语练习", "英语练习", "英语对话", "口语表达", "跟读",
+        "spoken english", "speaking practice", "oral english", "english conversation", "shadowing",
+    ),
+    "sales": ("销售", "成交", "客户转化", "sales", "closing", "customer conversion"),
+    "marketing": ("营销", "推广", "广告投放", "marketing", "promotion", "advertising"),
+    "product": ("产品设计", "产品经理", "用户体验", "product design", "product management", "user experience"),
+    "reflection": ("反思", "复盘", "自我认知", "reflection", "retrospective", "self awareness"),
+}
+
+
+def _topic_signals(node: GraphNode) -> set[str]:
+    """Extract cross-language themes plus useful lexical overlap from a node."""
+    combined = " ".join((node.label, node.snippet, *node.tags)).casefold()
+    signals = {
+        family
+        for family, phrases in _TOPIC_FAMILIES.items()
+        if any(phrase in combined for phrase in phrases)
+    }
+    signals.update(
+        f"term:{word}"
+        for word in re.findall(r"[a-z][a-z0-9-]{3,}", combined)
+        if word not in {"this", "that", "with", "from", "have", "about"}
+    )
+    signals.update(f"tag:{tag.casefold()}" for tag in node.tags)
+    return signals
+
+
 def _composite_link_score(
     semantic: float,
     source: GraphNode,
@@ -117,6 +147,8 @@ def _composite_link_score(
     all_tags = source_tags | target_tags
     tag_overlap = len(shared_tags) / len(all_tags) if all_tags else 0.0
     same_category = bool(source.group and source.group == target.group)
+    shared_topics = _topic_signals(source) & _topic_signals(target)
+    strong_topics = {topic for topic in shared_topics if not topic.startswith("term:")}
 
     # Metadata may strengthen a meaningful relationship, but never create one
     # when the note bodies are semantically far apart.
@@ -124,16 +156,28 @@ def _composite_link_score(
         semantic >= min_similarity
         or (shared_tags and semantic >= max(0.18, min_similarity - 0.16))
         or (same_category and semantic >= max(0.22, min_similarity - 0.09))
+        or (strong_topics and semantic >= max(0.10, min_similarity - 0.28))
+        or (shared_topics and semantic >= max(0.16, min_similarity - 0.22))
     )
     if not eligible:
         return None
 
-    score = min(1.0, semantic * 0.78 + tag_overlap * 0.14 + (0.08 if same_category else 0.0))
+    topic_strength = 1.0 if strong_topics else min(1.0, len(shared_topics) / 3)
+    score = min(
+        1.0,
+        semantic * 0.68 + tag_overlap * 0.12
+        + (0.06 if same_category else 0.0) + topic_strength * 0.14,
+    )
     signals = [f"meaning {semantic:.2f}"]
     if same_category:
         signals.append(f"category {source.group}")
     if shared_tags:
         signals.append("tags " + ", ".join(sorted(shared_tags)[:3]))
+    if shared_topics:
+        signals.append("topic " + ", ".join(
+            topic.removeprefix("term:").removeprefix("tag:")
+            for topic in sorted(shared_topics)[:3]
+        ))
     return score, " · ".join(signals)
 
 

@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { deleteDocument, getDocument, updateDocument } from "@/lib/api";
+import { deleteDocument, getDocument, suggestDocumentTags, updateDocument } from "@/lib/api";
 import type { DocumentDetail } from "@/lib/api";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownContent } from "@/components/markdown-content";
 import { AIWritingAssistant } from "@/components/ai-writing-assistant";
-import { Bot, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
+import { Bot, Loader2, Pencil, Save, Tag, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
 interface NoteReaderContextValue {
   openDocument: (id: string | number) => void;
@@ -35,17 +36,34 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [tags, setTags] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const closeDocument = useCallback(() => {
+  const closeImmediately = useCallback(() => {
     setDocumentId(null);
     setDocument(null);
     setEditing(false);
     setConfirmDelete(false);
     setError("");
   }, []);
+
+  const closeDocument = useCallback(() => {
+    const snapshot = documentId && document && !tags.split(/[,，]/).some((tag) => tag.trim())
+      ? { id: documentId, title: editing ? title : document.title, content: editing ? content : document.content }
+      : null;
+    closeImmediately();
+    if (!snapshot || !snapshot.content.trim()) return;
+    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
+    void suggestDocumentTags({ title: snapshot.title, content: snapshot.content })
+      .then(async ({ tags: suggested }) => {
+        if (!suggested.length) return;
+        await updateDocument(snapshot.id, { tags: suggested.join(", ") });
+        window.dispatchEvent(new CustomEvent("atlas:note-updated"));
+      })
+      .catch(() => undefined);
+  }, [closeImmediately, content, document, documentId, editing, tags, title]);
 
   const openDocument = useCallback((id: string | number) => {
     setDocumentId(String(id));
@@ -61,6 +79,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
       setDocument(next);
       setTitle(next.title);
       setContent(next.content || "");
+      setTags(next.tags.join(", "));
     } catch (cause) {
       setDocument(null);
       setError(cause instanceof Error ? cause.message : "Unable to load this note.");
@@ -77,7 +96,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     if (!documentId || !title.trim()) return;
     setSaving(true);
     try {
-      await updateDocument(documentId, { title: title.trim(), content });
+      await updateDocument(documentId, { title: title.trim(), content, tags });
       await loadDocument(documentId);
       setEditing(false);
       window.dispatchEvent(new CustomEvent("atlas:note-updated"));
@@ -112,10 +131,13 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
           <div className="border-b bg-[linear-gradient(120deg,rgba(219,238,255,.75),rgba(255,239,220,.58),rgba(255,225,239,.55))] px-7 py-5">
             <DialogHeader>
               {editing ? (
-                <Input value={title} onChange={(event) => setTitle(event.target.value)} className="mr-12 bg-white/75 text-xl font-semibold" />
+                <div className="mr-12 space-y-2">
+                  <Input value={title} onChange={(event) => setTitle(event.target.value)} className="bg-white/75 text-xl font-semibold" />
+                  <div className="relative"><Tag className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Add tags, separated by commas" className="bg-white/65 pl-9 text-sm" /></div>
+                </div>
               ) : <DialogTitle className="pr-12 text-xl leading-snug">{document?.title || "Note"}</DialogTitle>}
               <DialogDescription className="flex items-center gap-2">
-                {document && <><Badge variant="outline" className="bg-white/60">{document.source_type}</Badge><span>Updated {new Date(document.updated_at).toLocaleString()}</span></>}
+                {document && <><Badge variant="outline" className="bg-white/60">{document.source_type}</Badge>{document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}<span>Updated {new Date(document.updated_at).toLocaleString()}</span></>}
               </DialogDescription>
             </DialogHeader>
           </div>
@@ -124,7 +146,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
             {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <div className="relative">
                 <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] resize-y bg-white text-sm leading-7" />
                 <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} />
               </div>
@@ -140,7 +162,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             <div className="flex items-center gap-2">
               {editing ? <>
                 <Button onClick={() => void save()} disabled={saving || !title.trim()}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Save</Button>
-                <Button variant="ghost" onClick={() => { setEditing(false); setTitle(document.title); setContent(document.content); }}><X className="mr-2 h-4 w-4" />Cancel</Button>
+                <Button variant="ghost" onClick={() => { setEditing(false); setTitle(document.title); setContent(document.content); setTags(document.tags.join(", ")); }}><X className="mr-2 h-4 w-4" />Cancel</Button>
               </> : <>
                 <Button variant="outline" onClick={() => setEditing(true)}><Pencil className="mr-2 h-4 w-4" />Edit</Button>
                 {confirmDelete ? <>

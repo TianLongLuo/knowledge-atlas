@@ -287,6 +287,36 @@ def test_graph_composite_score_uses_metadata_only_as_semantic_boost():
     assert _composite_link_score(0.05, source, unrelated, 0.45) is None
 
 
+def test_graph_links_cross_language_speaking_practice_topics():
+    from routers.graph import GraphNode, _composite_link_score
+
+    chinese = GraphNode(
+        id="cn", label="英语口语练习", snippet="每天跟读并复述", group="学习", document_id=1,
+    )
+    english = GraphNode(
+        id="en", label="Daily speaking practice", snippet="Shadowing an English conversation", group="学习", document_id=2,
+    )
+    scored = _composite_link_score(0.17, chinese, english, 0.45)
+    assert scored is not None
+    assert "english-speaking" in scored[1]
+
+
+def test_legacy_document_route_key_survives_content_edits():
+    assert legacy_document_key(
+        "legacy-row", {"atlas_legacy_key": "content:original"}, "completely rewritten text"
+    ) == "content:original"
+
+
+def test_tag_suggestion_requires_external_processing_consent():
+    from schemas import TagSuggestRequest
+
+    with pytest.raises(ValidationError):
+        TagSuggestRequest(title="Draft", content="Body")
+    assert TagSuggestRequest(
+        title="Draft", content="Body", allow_external_processing=True
+    ).allow_external_processing is True
+
+
 def test_writing_assist_requires_explicit_external_processing_consent():
     from schemas import WritingAssistRequest
 

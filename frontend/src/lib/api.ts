@@ -136,7 +136,7 @@ export async function getDocument(id: string): Promise<DocumentDetail> {
     chunk_count: doc.chunks?.length || 0,
   };
 }
-export function updateDocument(id: string, data: { title?: string; content?: string }) {
+export function updateDocument(id: string, data: { title?: string; content?: string; tags?: string; category?: string }) {
   return apiFetch<RawDocument>(`/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(data) });
 }
 export function deleteDocument(id: string) {
@@ -223,6 +223,12 @@ export interface WritingAssistResponse {
 }
 export function getWritingAssistance(data: { title: string; content: string; document_id?: number }) {
   return apiFetch<WritingAssistResponse>("/agent/writing-assist", {
+    method: "POST",
+    body: JSON.stringify({ ...data, allow_external_processing: true }),
+  });
+}
+export function suggestDocumentTags(data: { title: string; content: string }) {
+  return apiFetch<{ tags: string[] }>("/agent/suggest-tags", {
     method: "POST",
     body: JSON.stringify({ ...data, allow_external_processing: true }),
   });

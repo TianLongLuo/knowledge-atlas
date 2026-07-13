@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getDocuments, getDocumentFilterOptions, deleteDocument, DocumentItem } from "@/lib/api";
+import { getDocuments, getDocumentFilterOptions, deleteDocument, updateDocument, DocumentItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { CreateNoteDialog } from "@/components/create-note-dialog";
 import { useNoteReader } from "@/components/note-reader";
+import { toast } from "sonner";
 
 const sourceTypes = [
   { value: "all", label: "All types" },
@@ -46,11 +47,27 @@ export default function DocumentsPage() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [editingTags, setEditingTags] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState("");
   const { openDocument } = useNoteReader();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadMoreRequestedRef = useRef(false);
   const queryVersionRef = useRef(0);
   const pageSize = 20;
+
+  const saveInlineTags = async (documentId: string) => {
+    const normalized = tagDraft.split(/[,，]/).map((value) => value.trim()).filter(Boolean).join(", ");
+    try {
+      await updateDocument(documentId, { tags: normalized });
+      setDocuments((current) => current.map((item) => item.id === documentId
+        ? { ...item, tags: normalized ? normalized.split(", ") : [] }
+        : item));
+      setEditingTags(null);
+      toast.success("Tags updated", { duration: 1400 });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to update tags");
+    }
+  };
 
   const loadDocuments = useCallback(async (pageToLoad: number, replace: boolean, requestVersion = queryVersionRef.current) => {
     if (replace) setLoading(true); else setLoadingMore(true);
@@ -251,6 +268,19 @@ export default function DocumentsPage() {
                         <Badge className="text-xs bg-blue-50 text-blue-700 hover:bg-blue-50">{doc.category}</Badge>
                         <span className="text-xs text-muted-foreground">Written {new Date(doc.note_at).toLocaleString()}</span>
                         {doc.tags.slice(0, 3).map((value) => <Badge key={value} variant="secondary" className="text-[10px]">#{value}</Badge>)}
+                        {editingTags === doc.id ? <Input
+                          value={tagDraft}
+                          onChange={(event) => setTagDraft(event.target.value)}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveInlineTags(doc.id); } if (event.key === "Escape") setEditingTags(null); }}
+                          placeholder="tag, tag"
+                          autoFocus
+                          className="h-7 w-44 text-xs"
+                        /> : <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); setEditingTags(doc.id); setTagDraft(doc.tags.join(", ")); }}
+                          className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] text-slate-500 opacity-0 transition hover:border-blue-300 hover:text-blue-600 group-hover:opacity-100"
+                        >+ tag</button>}
                       </div>
                     </div>
                   </div>

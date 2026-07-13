@@ -12,7 +12,7 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -233,6 +233,8 @@ def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
 class UpdateDocumentRequest(BaseModel):
     title: str | None = None
     content: str | None = None
+    tags: str | None = Field(default=None, max_length=4000)
+    category: str | None = Field(default=None, max_length=80)
 
 
 # ── List ──────────────────────────────────────────────────────────
@@ -472,8 +474,13 @@ async def update_document(
         new_meta = {
             **old_meta,
             "title": new_title,
+            "atlas_legacy_key": legacy_doc["logical_key"],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if body.tags is not None:
+            new_meta["tags"] = body.tags.strip()
+        if body.category is not None:
+            new_meta["category"] = body.category.strip()
 
         # Re-embed if content changed
         if body.content is not None and body.content != old_text:
@@ -515,6 +522,8 @@ async def update_document(
             document_id=document_id,
             title=body.title,
             content=body.content,
+            tags=body.tags,
+            category=body.category,
             db=db,
         )
     except ValueError as exc:

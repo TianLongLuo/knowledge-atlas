@@ -28,6 +28,7 @@ from models import AgentMemory
 from schemas import (
     AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation,
     MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
+    TagSuggestRequest, TagSuggestResponse,
     WritingAssistRequest, WritingAssistResponse, WritingIssue, WritingReference,
 )
 from services.search_service import SearchService, SearchResult
@@ -399,6 +400,54 @@ async def agent_status(_user: str = Depends(get_current_user)):
 
 
 # ── Main Q&A endpoint ─────────────────────────────────────────────
+
+
+@router.post("/suggest-tags", response_model=TagSuggestResponse)
+async def suggest_tags(
+    body: TagSuggestRequest,
+    _user: str = Depends(get_current_user),
+):
+    """Suggest a small set of reusable topic tags for an untagged note."""
+    if not settings.deepseek_api_key:
+        raise HTTPException(status_code=503, detail="DeepSeek is not configured for tag suggestions.")
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        timeout=settings.deepseek_timeout_seconds,
+        max_retries=2,
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return valid JSON with one key, tags. Suggest 2 to 5 concise, reusable topic tags. "
+                        "Prefer concepts over formats, merge synonyms, use the note's language, and never include #."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Title: {body.title or '(untitled)'}\n\nNote:\n{body.content[:30_000]}",
+                },
+            ],
+            temperature=0.1,
+            max_tokens=220,
+        )
+    except Exception as exc:
+        logger.exception("Tag suggestion request failed")
+        raise HTTPException(status_code=502, detail=deepseek_error_message(exc)) from exc
+    payload = json_object_from_model(response.choices[0].message.content or "")
+    values = payload.get("tags") or []
+    if not isinstance(values, list):
+        values = []
+    tags = list(dict.fromkeys(
+        str(value).strip().lstrip("#")[:40]
+        for value in values
+        if str(value).strip().lstrip("#")
+    ))[:5]
+    return TagSuggestResponse(tags=tags)
 
 
 @router.post("/writing-assist", response_model=WritingAssistResponse)

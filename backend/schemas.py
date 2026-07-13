@@ -144,6 +144,16 @@ class WritingAssistResponse(BaseModel):
     historical_references: list[WritingReference] = Field(default_factory=list)
 
 
+class TagSuggestRequest(BaseModel):
+    title: str = Field(default="", max_length=1024)
+    content: str = Field(min_length=1, max_length=120_000)
+    allow_external_processing: Literal[True]
+
+
+class TagSuggestResponse(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+
+
 class AgentStatusResponse(BaseModel):
     """Non-sensitive readiness details for the AI assistant."""
 

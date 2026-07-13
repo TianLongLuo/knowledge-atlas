@@ -157,6 +157,8 @@ class NoteService:
         document_id: int,
         title: str | None = None,
         content: str | None = None,
+        tags: str | None = None,
+        category: str | None = None,
         db: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """Update PostgreSQL document, replace chunks, enqueue Notion write-back."""
@@ -182,6 +184,14 @@ class NoteService:
                 doc.raw_content = content
                 doc.normalized_content = content
                 changed = True
+            if tags is not None or category is not None:
+                metadata = dict(doc.metadata_ or {})
+                if tags is not None:
+                    metadata["tags"] = tags.strip()
+                if category is not None:
+                    metadata["category"] = category.strip()
+                doc.metadata_ = metadata
+                changed = True
 
             if not changed:
                 if own_db:
@@ -195,6 +205,8 @@ class NoteService:
                 ).hexdigest()[:32]
                 doc.content_hash = content_hash
                 await self._reindex_chunks(session, doc, new_content)
+            elif tags is not None or category is not None or title is not None:
+                await self._refresh_chroma_metadata(doc)
 
             doc.updated_at = datetime.now(timezone.utc)
             await session.flush()
@@ -307,6 +319,8 @@ class NoteService:
                     "chunk_index": chunk.index,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "url": str(metadata.get("url") or ""),
+                    "tags": str(metadata.get("tags") or ""),
+                    "category": str(metadata.get("category") or ""),
                 }],
             )
             db.add(DocumentChunk(
@@ -317,6 +331,29 @@ class NoteService:
                 chroma_id=chroma_id,
                 token_count=chunk.token_count,
             ))
+
+    async def _refresh_chroma_metadata(self, doc: Document) -> None:
+        """Keep vector metadata aligned when title, category, or tags change."""
+        collection = get_chroma_collection()
+        result = collection.get(
+            where={"document_id": str(doc.id)},
+            include=["metadatas"],
+        )
+        ids = list(result.get("ids") or [])
+        if not ids:
+            return
+        metadata = doc.metadata_ or {}
+        existing = list(result.get("metadatas") or [{}] * len(ids))
+        collection.update(
+            ids=ids,
+            metadatas=[{
+                **(item or {}),
+                "title": doc.title,
+                "tags": str(metadata.get("tags") or ""),
+                "category": str(metadata.get("category") or ""),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            } for item in existing],
+        )
 
     async def _push_to_notion(
         self, db: AsyncSession, doc: Document
