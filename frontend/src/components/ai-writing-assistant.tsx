@@ -72,8 +72,14 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
   const expanded = hovered || pinned || autoOpen;
 
   return (
-    <div className="fixed right-3 top-[5.5rem] z-[90] sm:right-5 sm:top-24" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
-      <aside aria-hidden={!expanded} className={`absolute right-0 top-2 w-[min(380px,calc(100vw-1.5rem))] origin-top-right rounded-2xl border border-slate-200/90 bg-white/96 p-4 shadow-[0_20px_70px_rgba(30,55,95,.20)] backdrop-blur-xl transition duration-300 ease-out ${expanded ? "pointer-events-auto translate-x-0 scale-100 opacity-100" : "pointer-events-none translate-x-3 scale-95 opacity-0"}`}>
+    <div
+      className="flex min-h-[42vh] shrink-0 items-stretch overflow-hidden transition-[width] duration-300 ease-out"
+      style={{ width: expanded ? "min(380px, 45%)" : "14px" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <aside aria-hidden={!expanded} className={`min-w-0 flex-1 overflow-hidden rounded-2xl border bg-white/96 shadow-sm transition duration-300 ${expanded ? "mr-2 border-slate-200/90 opacity-100" : "pointer-events-none border-transparent opacity-0"}`}>
+        <div className="h-full min-w-[250px] p-4">
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-blue-600" /><h3 className="text-sm font-semibold text-slate-900">Writing insights</h3></div>
           <Button type="button" size="sm" variant="ghost" onClick={() => void analyze(true)} disabled={loading || content.trim().length < 20} title="Refresh analysis">
@@ -99,11 +105,12 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
         <section><div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-red-700"><AlertTriangle className="h-3.5 w-3.5" />Logic review</div><IssueList items={result.logic_issues} empty="No clear logical issue found." /></section>
         <section><div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-700"><Languages className="h-3.5 w-3.5" />Grammar review</div><IssueList items={result.grammar_issues} empty="No clear grammar issue found." /></section>
         </div>}
+        </div>
       </aside>
       <button
         type="button"
         onClick={() => setPinned((value) => !value)}
-        className={`relative z-10 block h-2.5 w-14 rounded-full border shadow-sm backdrop-blur transition-all duration-300 hover:w-20 ${loading ? "animate-pulse border-blue-300 bg-blue-400" : insightCount > 0 ? "border-blue-300 bg-gradient-to-r from-blue-400 to-violet-400" : "border-slate-300 bg-white/90 hover:border-blue-300"}`}
+        className={`sticky top-3 block h-28 w-3 shrink-0 rounded-full border shadow-sm backdrop-blur transition-all duration-300 hover:w-3.5 ${loading ? "animate-pulse border-blue-300 bg-blue-400" : insightCount > 0 ? "border-blue-300 bg-gradient-to-b from-blue-400 to-violet-400" : "border-slate-300 bg-white/90 hover:border-blue-300"}`}
         aria-expanded={expanded}
         aria-label="Open AI writing insights"
         title="AI writing insights"

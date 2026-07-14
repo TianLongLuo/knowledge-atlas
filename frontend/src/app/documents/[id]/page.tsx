@@ -231,8 +231,8 @@ export default function DocumentDetailPage() {
         </CardHeader>
         <CardContent>
           {editing ? (
-            <div className="relative">
-              <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] text-sm bg-background/70 resize-y" placeholder="Document content..." />
+            <div className="flex min-w-0 items-stretch gap-3">
+              <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] min-w-0 flex-1 resize-y bg-background/70 text-sm" placeholder="Document content..." />
               <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />
             </div>
           ) : (

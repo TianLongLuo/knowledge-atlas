@@ -66,8 +66,8 @@ export function CreateNoteDialog({ onCreated }: Props) {
         <DialogHeader>
           <DialogTitle>New note</DialogTitle>
         </DialogHeader>
-        <div className="relative">
-          <div className="space-y-4">
+        <div className="flex min-w-0 items-stretch gap-3">
+          <div className="min-w-0 flex-1 space-y-4">
             <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} className="bg-background/70" />
             <Textarea placeholder="Content..." value={content} onChange={(e) => setContent(e.target.value)} rows={16} className="min-h-[42vh] max-h-[65vh] bg-background/70 resize-y leading-7" />
             <p className="text-right text-xs text-muted-foreground">{content.length.toLocaleString()} characters</p>
