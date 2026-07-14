@@ -11,6 +11,7 @@ interface Props {
   content: string;
   documentId?: number;
   onApplyTitle: (title: string) => void;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 function IssueList({ items, empty }: { items: WritingIssue[]; empty: string }) {
@@ -24,15 +25,17 @@ function IssueList({ items, empty }: { items: WritingIssue[]; empty: string }) {
   ))}</div>;
 }
 
-export function AIWritingAssistant({ title, content, documentId, onApplyTitle }: Props) {
+export function AIWritingAssistant({ title, content, documentId, onApplyTitle, onExpandedChange }: Props) {
   const [result, setResult] = useState<WritingAssistResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
-  const [autoOpen, setAutoOpen] = useState(false);
+  const [justUpdated, setJustUpdated] = useState(false);
   const lastSignature = useRef("");
   const requestVersion = useRef(0);
+  const hoverTimer = useRef<number | null>(null);
+  const leaveTimer = useRef<number | null>(null);
 
   const analyze = useCallback(async (force = false) => {
     const draft = content.trim();
@@ -61,24 +64,54 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
 
   useEffect(() => {
     if (!result) return;
-    setAutoOpen(true);
-    const timer = window.setTimeout(() => setAutoOpen(false), 3800);
+    setJustUpdated(true);
+    const timer = window.setTimeout(() => setJustUpdated(false), 2200);
     return () => window.clearTimeout(timer);
   }, [result]);
+
+  useEffect(() => () => {
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+    if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
+  }, []);
 
   const insightCount = result
     ? result.suggested_titles.length + result.directions.length + result.logic_issues.length + result.grammar_issues.length
     : 0;
-  const expanded = hovered || pinned || autoOpen;
+  const expanded = hovered || pinned;
+
+  useEffect(() => {
+    onExpandedChange?.(expanded);
+  }, [expanded, onExpandedChange]);
+
+  useEffect(() => () => onExpandedChange?.(false), [onExpandedChange]);
+
+  const openAfterIntent = () => {
+    if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
+    if (pinned || hovered) return;
+    hoverTimer.current = window.setTimeout(() => setHovered(true), 180);
+  };
+
+  const closeAfterLeave = () => {
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+    if (pinned) return;
+    leaveTimer.current = window.setTimeout(() => setHovered(false), 420);
+  };
+
+  const keepOpen = () => {
+    if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
+    setHovered(true);
+  };
 
   return (
     <div
-      className="flex min-h-[42vh] shrink-0 items-stretch overflow-hidden transition-[width] duration-300 ease-out"
-      style={{ width: expanded ? "min(380px, 45%)" : "14px" }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="pointer-events-none flex min-h-[42vh] w-[340px] max-w-[calc(100vw-2rem)] shrink-0 items-stretch overflow-hidden"
     >
-      <aside aria-hidden={!expanded} className={`min-w-0 flex-1 overflow-hidden rounded-2xl border bg-white/96 shadow-sm transition duration-300 ${expanded ? "mr-2 border-slate-200/90 opacity-100" : "pointer-events-none border-transparent opacity-0"}`}>
+      <aside
+        aria-hidden={!expanded}
+        onMouseEnter={keepOpen}
+        onMouseLeave={closeAfterLeave}
+        className={`min-w-0 flex-1 overflow-hidden rounded-2xl border bg-white/96 shadow-[0_20px_60px_rgba(51,65,85,0.12)] backdrop-blur-xl transition-[opacity,transform,border-color] duration-300 ease-out ${expanded ? "pointer-events-auto mr-2 translate-x-0 border-slate-200/90 opacity-100" : "translate-x-4 border-transparent opacity-0"}`}
+      >
         <div className="h-full min-w-[250px] p-4">
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-blue-600" /><h3 className="text-sm font-semibold text-slate-900">Writing insights</h3></div>
@@ -109,10 +142,15 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
       </aside>
       <button
         type="button"
-        onClick={() => setPinned((value) => !value)}
-        className={`sticky top-3 block h-28 w-3 shrink-0 rounded-full border shadow-sm backdrop-blur transition-all duration-300 hover:w-3.5 ${loading ? "animate-pulse border-blue-300 bg-blue-400" : insightCount > 0 ? "border-blue-300 bg-gradient-to-b from-blue-400 to-violet-400" : "border-slate-300 bg-white/90 hover:border-blue-300"}`}
+        onClick={() => setPinned((value) => {
+          if (value) setHovered(false);
+          return !value;
+        })}
+        onMouseEnter={openAfterIntent}
+        onMouseLeave={closeAfterLeave}
+        className={`pointer-events-auto sticky top-3 block h-28 w-3 shrink-0 rounded-full border shadow-sm backdrop-blur transition-all duration-300 hover:w-3.5 ${loading || justUpdated ? "animate-pulse border-blue-300 bg-blue-400 shadow-[0_0_18px_rgba(96,165,250,.55)]" : insightCount > 0 ? "border-blue-300 bg-gradient-to-b from-blue-400 to-violet-400" : "border-slate-300 bg-white/90 hover:border-blue-300"}`}
         aria-expanded={expanded}
-        aria-label="Open AI writing insights"
+        aria-label={expanded ? "Close AI writing insights" : "Open AI writing insights"}
         title="AI writing insights"
       >
         <span className="sr-only">AI writing insights{insightCount ? `, ${insightCount} suggestions` : ""}</span>

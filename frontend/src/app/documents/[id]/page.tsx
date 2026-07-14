@@ -35,6 +35,7 @@ export default function DocumentDetailPage() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
 
   const loadDoc = async () => {
     setLoading(true);
@@ -231,9 +232,13 @@ export default function DocumentDetailPage() {
         </CardHeader>
         <CardContent>
           {editing ? (
-            <div className="flex min-w-0 items-stretch gap-3">
-              <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] min-w-0 flex-1 resize-y bg-background/70 text-sm" placeholder="Document content..." />
-              <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />
+            <div className="relative mx-auto min-h-[520px] w-full max-w-[1020px]">
+              <div className={`mx-auto w-full max-w-[650px] transform-gpu transition-transform duration-300 ease-out ${assistantExpanded ? "lg:-translate-x-[185px]" : "translate-x-0"}`}>
+                <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] w-full resize-y bg-background/70 text-sm leading-7" placeholder="Document content..." />
+              </div>
+              <div className="absolute inset-y-0 right-0 z-10 flex items-start">
+                <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} onExpandedChange={setAssistantExpanded} />
+              </div>
             </div>
           ) : (
             <div className="note-body max-w-none whitespace-pre-wrap text-sm leading-relaxed">

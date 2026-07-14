@@ -40,6 +40,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
 
   const closeImmediately = useCallback(() => {
     setDocumentId(null);
@@ -146,9 +147,13 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
             {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
-              <div className="flex min-w-0 items-stretch gap-3">
-                <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] min-w-0 flex-1 resize-y bg-white text-sm leading-7" />
-                <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} />
+              <div className="relative mx-auto min-h-[55vh] w-full max-w-[1020px]">
+                <div className={`mx-auto w-full max-w-[650px] transform-gpu transition-transform duration-300 ease-out ${assistantExpanded ? "lg:-translate-x-[185px]" : "translate-x-0"}`}>
+                  <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] w-full resize-y bg-white text-sm leading-7" />
+                </div>
+                <div className="absolute inset-y-0 right-0 z-10 flex items-start">
+                  <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} onExpandedChange={setAssistantExpanded} />
+                </div>
               </div>
             ) : (
               <MarkdownContent>{document.content || "This note has no readable content."}</MarkdownContent>

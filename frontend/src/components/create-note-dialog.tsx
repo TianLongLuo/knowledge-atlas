@@ -30,6 +30,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
   const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -66,8 +67,8 @@ export function CreateNoteDialog({ onCreated }: Props) {
         <DialogHeader>
           <DialogTitle>New note</DialogTitle>
         </DialogHeader>
-        <div className="flex min-w-0 items-stretch gap-3">
-          <div className="min-w-0 flex-1 space-y-4">
+        <div className="relative mx-auto min-h-[42vh] w-full max-w-[1020px]">
+          <div className={`mx-auto w-full max-w-[650px] transform-gpu space-y-4 transition-transform duration-300 ease-out ${assistantExpanded ? "lg:-translate-x-[185px]" : "translate-x-0"}`}>
             <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} className="bg-background/70" />
             <Textarea placeholder="Content..." value={content} onChange={(e) => setContent(e.target.value)} rows={16} className="min-h-[42vh] max-h-[65vh] bg-background/70 resize-y leading-7" />
             <p className="text-right text-xs text-muted-foreground">{content.length.toLocaleString()} characters</p>
@@ -81,7 +82,9 @@ export function CreateNoteDialog({ onCreated }: Props) {
               {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}{loading ? "Creating..." : "Save to knowledge base"}
             </Button>
           </div>
-          <AIWritingAssistant title={title} content={content} onApplyTitle={setTitle} />
+          <div className="absolute inset-y-0 right-0 z-10 flex items-start">
+            <AIWritingAssistant title={title} content={content} onApplyTitle={setTitle} onExpandedChange={setAssistantExpanded} />
+          </div>
         </div>
       </DialogContent>
     </Dialog>
