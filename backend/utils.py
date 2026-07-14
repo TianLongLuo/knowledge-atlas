@@ -98,15 +98,17 @@ def legacy_document_key(chroma_id: str, metadata: dict[str, Any], content: str =
 def merge_chunk_texts(chunks: list[str]) -> str:
     """Join ordered chunks while removing repeated overlap and exact copies."""
     merged = ""
-    seen: set[str] = set()
+    previous_exact = ""
     for raw in chunks:
         text = (raw or "").strip()
         if not text:
             continue
         exact = normalized_text(text)
-        if exact in seen:
+        # Suppress only duplicate writes of the immediately previous chunk.
+        # Repeated passages later in a long note are legitimate content.
+        if exact == previous_exact:
             continue
-        seen.add(exact)
+        previous_exact = exact
         if not merged:
             merged = text
             continue

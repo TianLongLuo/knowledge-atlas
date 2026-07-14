@@ -61,18 +61,27 @@ class NotionSyncService:
                     return
 
                 processed = 0
+                page_errors: list[str] = []
                 for page in pages:
                     try:
                         await self._process_page(page, notion, db)
                         processed += 1
                     except Exception as e:
                         logger.error(f"Error processing Notion page {page.get('id')}: {e}")
+                        page_errors.append(f"{page.get('id')}: {e}")
+
+                if page_errors:
+                    raise RuntimeError(
+                        f"{len(page_errors)} Notion page(s) were not fully synchronized; "
+                        "their existing content was retained. " + "; ".join(page_errors[:3])
+                    )
 
                 await self._complete_sync(sync_state_id, db, processed)
 
             except Exception as e:
                 logger.error(f"Notion sync failed: {e}")
                 await self._fail_sync(sync_state_id, str(e))
+                raise
 
     async def _fetch_all_pages(self, notion, database_id: str) -> list[dict]:
         """Fetch all pages from a Notion database with pagination."""
@@ -232,49 +241,53 @@ class NotionSyncService:
         blocks = await self._fetch_blocks_recursive(notion, page_id, depth=0)
         return self._blocks_to_text(blocks)
 
-    async def _fetch_blocks_recursive(self, notion, block_id: str, depth: int = 0, max_depth: int = 8) -> list[dict]:
-        """Recursively fetch blocks with pagination and depth/cycle safety."""
+    async def _fetch_blocks_recursive(
+        self,
+        notion,
+        block_id: str,
+        depth: int = 0,
+        max_depth: int = 32,
+        _seen_ids: set[str] | None = None,
+    ) -> list[dict]:
+        """Fetch every block page strictly; never return a silently partial document."""
         all_blocks: list[dict] = []
         if depth >= max_depth:
-            return all_blocks
+            raise RuntimeError(f"Notion block nesting exceeded {max_depth} levels at {block_id}")
 
-        seen_ids: set[str] = set()
+        seen_ids = _seen_ids if _seen_ids is not None else set()
         start_cursor = None
 
-        try:
-            while True:
-                params: dict = {"block_id": block_id, "page_size": 100}
-                if start_cursor:
-                    params["start_cursor"] = start_cursor
+        while True:
+            params: dict = {"block_id": block_id, "page_size": 100}
+            if start_cursor:
+                params["start_cursor"] = start_cursor
 
-                response = await notion.blocks.children.list(**params)
-                batch = response.get("results", [])
-                for block in batch:
-                    block_id_str = str(block.get("id", ""))
-                    # Cycle safety: skip if we've seen this block
-                    if block_id_str in seen_ids:
-                        continue
-                    seen_ids.add(block_id_str)
-                    all_blocks.append(block)
+            response = await notion.blocks.children.list(**params)
+            batch = response.get("results", [])
+            if not isinstance(batch, list):
+                raise RuntimeError(f"Invalid Notion block response for {block_id}")
+            for block in batch:
+                child_id = str(block.get("id", ""))
+                if child_id and child_id in seen_ids:
+                    continue
+                if child_id:
+                    seen_ids.add(child_id)
+                all_blocks.append(block)
 
-                    # Recursively fetch children
-                    if block.get("has_children"):
-                        try:
-                            children = await self._fetch_blocks_recursive(
-                                notion, block_id_str, depth + 1, max_depth
-                            )
-                            all_blocks.extend(children)
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to fetch children for block %s at depth %d: %s",
-                                block_id_str, depth + 1, e
-                            )
+                if block.get("has_children"):
+                    if not child_id:
+                        raise RuntimeError(f"Notion child block under {block_id} has no id")
+                    children = await self._fetch_blocks_recursive(
+                        notion, child_id, depth + 1, max_depth, seen_ids
+                    )
+                    all_blocks.extend(children)
 
-                if not response.get("has_more"):
-                    break
-                start_cursor = response.get("next_cursor")
-        except Exception as e:
-            logger.error("Error fetching blocks for %s at depth %d: %s", block_id, depth, e)
+            if not response.get("has_more"):
+                break
+            next_cursor = response.get("next_cursor")
+            if not next_cursor or next_cursor == start_cursor:
+                raise RuntimeError(f"Notion pagination stopped before completing block {block_id}")
+            start_cursor = next_cursor
 
         return all_blocks
 
@@ -347,12 +360,10 @@ class NotionSyncService:
                 cap_text = "".join(t.get("plain_text", "") for t in caption)
                 text_parts.append(f"{indent}[Bookmark: {cap_text} ({bookmark_url})]")
 
-            elif block_type in ("table", "table_row"):
-                # Basic table handling
-                rows = block.get("table", {}).get("rows", [])
-                for row in rows:
-                    cells = [cell.get("plain_text", "") for cell in row.get("cells", [])]
-                    text_parts.append(f"{indent}| {' | '.join(cells)} |")
+            elif block_type == "table_row":
+                cells = block.get("table_row", {}).get("cells", [])
+                cell_text = ["".join(part.get("plain_text", "") for part in cell) for cell in cells]
+                text_parts.append(f"{indent}| {' | '.join(cell_text)} |")
 
             elif block_type == "child_page" or block_type == "child_database":
                 title = block.get(block_type, {}).get("title", "")

@@ -58,6 +58,52 @@ def test_chunk_families_and_overlap_reconstruct_complete_note():
     assert legacy_document_key("note_chunk_0", meta, "first") == legacy_document_key("note_chunk_1", meta, "second")
     assert merge_chunk_texts(["one two three shared overlap text", "shared overlap text and the ending"]) == "one two three shared overlap text and the ending"
     assert merge_chunk_texts(["same", "same", "different"]) == "same\n\ndifferent"
+    assert merge_chunk_texts(["repeat", "middle", "repeat"]) == "repeat\n\nmiddle\n\nrepeat"
+
+
+def test_chunking_keeps_the_tail_after_two_hundred_chunks():
+    from services.chunking import ChunkingService
+
+    long_note = "\n\n".join(
+        f"Section {index}. " + ("x" * 470) + (" FINAL-TAIL" if index == 239 else "")
+        for index in range(240)
+    )
+    chunks = ChunkingService(chunk_size=500, chunk_overlap=0).chunk_text(long_note)
+    assert len(chunks) >= 239
+    assert "FINAL-TAIL" in chunks[-1].text
+
+
+def test_document_detail_prefers_complete_reconstructed_content():
+    from routers.documents import _longest_document_content
+
+    rebuilt = "full content " * 1000
+    assert _longest_document_content("short preview", "title only", rebuilt) == rebuilt
+
+
+def test_notion_nested_pagination_is_complete_and_strict():
+    import asyncio
+    from types import SimpleNamespace
+    from services.notion_sync import NotionSyncService
+
+    class Children:
+        async def list(self, block_id, start_cursor=None, **_kwargs):
+            if block_id == "page" and start_cursor is None:
+                return {"results": [{"id": "a", "type": "paragraph", "paragraph": {"rich_text": []}}], "has_more": True, "next_cursor": "next"}
+            if block_id == "page" and start_cursor == "next":
+                return {"results": [{"id": "b", "type": "paragraph", "paragraph": {"rich_text": []}}], "has_more": False}
+            raise RuntimeError("unexpected request")
+
+    notion = SimpleNamespace(blocks=SimpleNamespace(children=Children()))
+    blocks = asyncio.run(NotionSyncService()._fetch_blocks_recursive(notion, "page"))
+    assert [block["id"] for block in blocks] == ["a", "b"]
+
+    class BrokenChildren:
+        async def list(self, **_kwargs):
+            raise RuntimeError("temporary Notion failure")
+
+    broken = SimpleNamespace(blocks=SimpleNamespace(children=BrokenChildren()))
+    with pytest.raises(RuntimeError, match="temporary Notion failure"):
+        asyncio.run(NotionSyncService()._fetch_blocks_recursive(broken, "page"))
 
 
 def test_legacy_document_listing_collapses_duplicates_and_rebuilds_chunks(monkeypatch):

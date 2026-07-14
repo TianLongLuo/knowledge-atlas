@@ -227,6 +227,30 @@ def _find_chroma_by_neg_id(neg_id: int) -> tuple[list[str], dict | None]:
     return [], None
 
 
+def _longest_document_content(*candidates: str) -> str:
+    """Choose the most complete representation without trusting one storage layer."""
+    return max((candidate or "" for candidate in candidates), key=len, default="")
+
+
+def _chroma_document_content(document_id: int) -> str:
+    """Rebuild canonical content from vectors when SQL chunk rows are incomplete."""
+    try:
+        result = get_chroma_collection().get(
+            where={"document_id": str(document_id)},
+            include=["documents", "metadatas"],
+        )
+        documents = list(result.get("documents") or [])
+        metadatas = list(result.get("metadatas") or [{}] * len(documents))
+        ordered = sorted(
+            zip(metadatas, documents),
+            key=lambda item: int((item[0] or {}).get("chunk_index") or 0),
+        )
+        return merge_chunk_texts([text or "" for _, text in ordered])
+    except Exception:
+        logger.exception("Failed to rebuild Chroma content for document %s", document_id)
+        return ""
+
+
 # ── Request schemas ───────────────────────────────────────────────
 
 
@@ -401,9 +425,9 @@ async def get_document(
     )
     chunks = chunks_result.scalars().all()
     reconstructed = merge_chunk_texts([chunk.chunk_text for chunk in chunks])
-    full_content = max(
-        (doc.raw_content or "", doc.normalized_content or "", reconstructed),
-        key=len,
+    chroma_reconstructed = _chroma_document_content(document_id)
+    full_content = _longest_document_content(
+        doc.raw_content or "", doc.normalized_content or "", reconstructed, chroma_reconstructed,
     )
 
     nodes_result = await db.execute(

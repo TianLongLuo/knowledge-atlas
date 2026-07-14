@@ -25,7 +25,7 @@ class ChunkingService:
         self,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-        max_chunks: int = 200,
+        max_chunks: int = 10_000,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -43,11 +43,12 @@ class ChunkingService:
         if not text or not text.strip():
             return []
 
-        # Normalize whitespace
-        text = " ".join(text.split())
+        # Preserve paragraph boundaries. They improve embeddings and make
+        # chunk reconstruction safer for long notes.
+        import re
 
-        # Split into paragraphs
-        paragraphs = text.split("\n\n") if "\n\n" in text else [text]
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = re.split(r"\n{2,}", text)
 
         chunks: list[Chunk] = []
         current_chunk: list[str] = []
@@ -78,7 +79,9 @@ class ChunkingService:
                     chunk_index += 1
 
                     if len(chunks) >= self.max_chunks:
-                        return chunks
+                        raise ValueError(
+                            f"Document exceeds the safe chunk limit ({self.max_chunks}); refusing to truncate it"
+                        )
 
                     # Start new chunk with overlap
                     overlap_tokens = current_chunk[-self.chunk_overlap // 10 :] if self.chunk_overlap > 0 else []
@@ -90,6 +93,10 @@ class ChunkingService:
 
         # Final chunk
         if current_chunk:
+            if len(chunks) >= self.max_chunks:
+                raise ValueError(
+                    f"Document exceeds the safe chunk limit ({self.max_chunks}); refusing to truncate it"
+                )
             chunk_text = " ".join(current_chunk)
             chunks.append(
                 Chunk(
