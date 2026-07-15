@@ -106,6 +106,50 @@ def test_notion_nested_pagination_is_complete_and_strict():
         asyncio.run(NotionSyncService()._fetch_blocks_recursive(broken, "page"))
 
 
+def test_notion_inbound_sync_preserves_atlas_tags_without_tag_property():
+    from services.notion_sync import NotionSyncService
+
+    service = NotionSyncService()
+    properties = {
+        "Name": {"type": "title", "title": []},
+        "Category": {"type": "select", "select": {"name": "Research"}},
+    }
+    has_tags, notion_tags = service._extract_tag_property(properties)
+    merged = service._merge_notion_metadata(
+        {"tags": "AI, research", "category": "Work", "local_only": True},
+        {"notion_page_id": "page-1"},
+        has_tags,
+        notion_tags,
+    )
+
+    assert has_tags is False
+    assert merged["tags"] == "AI, research"
+    assert merged["category"] == "Work"
+    assert merged["local_only"] is True
+
+
+def test_notion_inbound_sync_accepts_explicit_empty_or_populated_tags():
+    from services.notion_sync import NotionSyncService
+
+    service = NotionSyncService()
+    has_tags, notion_tags = service._extract_tag_property({
+        "标签": {"type": "multi_select", "multi_select": [{"name": "英语"}, {"name": "练习"}]},
+    })
+    assert has_tags is True
+    assert notion_tags == ["英语", "练习"]
+    assert service._merge_notion_metadata(
+        {"tags": "old"}, {}, has_tags, notion_tags,
+    )["tags"] == ["英语", "练习"]
+
+    has_tags, notion_tags = service._extract_tag_property({
+        "Tags": {"type": "multi_select", "multi_select": []},
+    })
+    assert has_tags is True
+    assert service._merge_notion_metadata(
+        {"tags": "old"}, {}, has_tags, notion_tags,
+    )["tags"] == []
+
+
 def test_notion_writeback_discovers_real_title_property_and_optional_fields(monkeypatch):
     import asyncio
     from types import SimpleNamespace
@@ -144,6 +188,37 @@ def test_notion_writeback_discovers_real_title_property_and_optional_fields(monk
     assert properties["标题"]["title"][0]["text"]["content"] == "网站创建的笔记"
     assert properties["标签"]["multi_select"] == [{"name": "研究"}, {"name": "市场"}]
     assert properties["分类"]["select"] == {"name": "工作"}
+
+
+def test_notion_writeback_creates_missing_tags_property(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from services.note_service import NoteService
+    from config import settings
+
+    monkeypatch.setattr(settings, "notion_database_id", "database-without-tags")
+
+    class Databases:
+        def __init__(self):
+            self.updated = None
+
+        async def retrieve(self, database_id):
+            assert database_id == "database-without-tags"
+            return {"properties": {"Name": {"type": "title"}}}
+
+        async def update(self, database_id, properties):
+            self.updated = {"database_id": database_id, "properties": properties}
+            return {"id": database_id}
+
+    databases = Databases()
+    service = NoteService()
+    schema = asyncio.run(service._get_notion_database_schema(SimpleNamespace(databases=databases)))
+
+    assert schema["tags"] == "Tags"
+    assert databases.updated == {
+        "database_id": "database-without-tags",
+        "properties": {"Tags": {"multi_select": {}}},
+    }
 
 
 def test_notion_writeback_replaces_old_blocks_and_writes_every_batch():

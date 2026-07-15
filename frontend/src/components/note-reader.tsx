@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { deleteDocument, getDocument, suggestDocumentTags, updateDocument } from "@/lib/api";
+import { deleteDocument, getDocument } from "@/lib/api";
 import type { DocumentDetail } from "@/lib/api";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { AIWritingAssistant } from "@/components/ai-writing-assistant";
 import { AutosaveStatus } from "@/components/autosave-status";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { readStoredDraft, useDocumentAutosave } from "@/lib/use-document-autosave";
+import { autoTagDocument } from "@/lib/auto-tags";
 import { Bot, Check, Loader2, Maximize2, Pencil, Tag, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -103,21 +104,33 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
   });
 
   const closeDocument = useCallback(() => {
-    if (editing) void autosave.saveNow();
+    const savePromise = editing ? autosave.saveNow() : Promise.resolve(true);
     const snapshot = documentId && document && !tags.split(/[,，]/).some((tag) => tag.trim())
       ? { id: documentId, title: editing ? title : document.title, content: editing ? content : document.content }
       : null;
     closeImmediately();
     if (!snapshot || !snapshot.content.trim()) return;
-    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
-    void suggestDocumentTags({ title: snapshot.title, content: snapshot.content })
-      .then(async ({ tags: suggested }) => {
-        if (!suggested.length) return;
-        await updateDocument(snapshot.id, { tags: suggested.join(", ") });
-        window.dispatchEvent(new CustomEvent("atlas:note-updated"));
-      })
-      .catch(() => undefined);
+    void savePromise.then((saved) => saved
+      ? autoTagDocument(snapshot.id, snapshot.title, snapshot.content)
+      : undefined
+    ).catch(() => undefined);
   }, [autosave, closeImmediately, content, document, documentId, editing, tags, title]);
+
+  const finishEditing = useCallback(() => {
+    const snapshot = documentId && !tags.split(/[,，]/).some((tag) => tag.trim())
+      ? { id: documentId, title, content }
+      : null;
+    const savePromise = autosave.saveNow();
+    setEditing(false);
+    if (!snapshot || !snapshot.content.trim()) return;
+    void savePromise.then(async (saved) => {
+      if (!saved) return;
+      const suggested = await autoTagDocument(snapshot.id, snapshot.title, snapshot.content);
+      if (!suggested.length) return;
+      setTags(suggested.join(", "));
+      setDocument((current) => current ? { ...current, tags: suggested } : current);
+    }).catch(() => undefined);
+  }, [autosave, content, documentId, tags, title]);
 
   const beginEditing = () => {
     if (!documentId || !document) return;
@@ -137,7 +150,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     setError("");
     try {
       await deleteDocument(documentId);
-      closeDocument();
+      closeImmediately();
       window.dispatchEvent(new CustomEvent("atlas:note-deleted"));
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Unable to delete this note.");
@@ -158,8 +171,8 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             <div className="flex items-center gap-1.5">
               {editing && <AutosaveStatus state={autosave.state} message={autosave.message} />}
               {document && !editing && <Button variant="ghost" size="sm" className="h-8" onClick={() => { closeDocument(); router.push(`/agent?doc=${document.id}`); }}><Bot className="mr-1.5 h-4 w-4" />Ask AI</Button>}
-              {document && <Button variant="ghost" size="icon-sm" onClick={() => { if (editing) void autosave.saveNow(); closeImmediately(); router.push(`/documents/${document.id}?edit=1`); }} aria-label="Open as full page" title="Open as full page"><Maximize2 className="h-4 w-4" /></Button>}
-              {document && (editing ? <Button variant="ghost" size="sm" className="h-8" onClick={() => { void autosave.saveNow(); setEditing(false); }}><Check className="mr-1.5 h-4 w-4" />Done</Button> : <Button variant="ghost" size="sm" className="h-8" onClick={beginEditing}><Pencil className="mr-1.5 h-4 w-4" />Edit</Button>)}
+              {document && <Button variant="ghost" size="icon-sm" onClick={() => { closeDocument(); router.push(`/documents/${document.id}?edit=1`); }} aria-label="Open as full page" title="Open as full page"><Maximize2 className="h-4 w-4" /></Button>}
+              {document && (editing ? <Button variant="ghost" size="sm" className="h-8" onClick={finishEditing}><Check className="mr-1.5 h-4 w-4" />Done</Button> : <Button variant="ghost" size="sm" className="h-8" onClick={beginEditing}><Pencil className="mr-1.5 h-4 w-4" />Edit</Button>)}
               <Button type="button" variant="ghost" size="icon-sm" onClick={closeDocument} aria-label="Close note"><X className="h-4 w-4" /></Button>
             </div>
           </header>

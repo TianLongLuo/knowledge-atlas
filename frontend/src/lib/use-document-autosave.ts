@@ -73,11 +73,17 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
   const idRef = useRef(id);
   const onSavedRef = useRef(onSaved);
   const runSaveRef = useRef<() => Promise<void>>(async () => undefined);
+  const saveWaitersRef = useRef<Array<(saved: boolean) => void>>([]);
 
   useEffect(() => { latestRef.current = draft; }, [draft]);
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
   useEffect(() => { idRef.current = id; }, [id]);
   useEffect(() => { onSavedRef.current = onSaved; }, [onSaved]);
+
+  const settleSaveWaiters = useCallback((saved: boolean) => {
+    const waiters = saveWaitersRef.current.splice(0);
+    waiters.forEach((resolve) => resolve(saved));
+  }, []);
 
   useEffect(() => {
     savedSignatureRef.current = initialSignature;
@@ -86,7 +92,10 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
   }, [enabled, id, initialSignature]);
 
   const runSave = useCallback(async () => {
-    if (!enabledRef.current || !idRef.current) return;
+    if (!enabledRef.current || !idRef.current) {
+      settleSaveWaiters(true);
+      return;
+    }
     if (savingRef.current) {
       queuedRef.current = true;
       return;
@@ -97,17 +106,20 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
     if (!snapshot.title.trim()) {
       setState("local");
       setMessage("Add a title to sync this draft");
+      settleSaveWaiters(false);
       return;
     }
     if (snapshotSignature === savedSignatureRef.current) {
       setState("saved");
       setMessage("");
       clearStoredDraft(storageKey);
+      settleSaveWaiters(true);
       return;
     }
 
     savingRef.current = true;
     queuedRef.current = false;
+    let saved = true;
     setState("saving");
     setMessage("");
     try {
@@ -127,6 +139,7 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
         queuedRef.current = true;
       }
     } catch (cause) {
+      saved = false;
       setState("error");
       setMessage(cause instanceof Error ? cause.message : "Server unavailable; your draft is safe locally");
       if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
@@ -136,9 +149,11 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
       if (queuedRef.current && enabledRef.current) {
         queuedRef.current = false;
         window.setTimeout(() => void runSaveRef.current(), 0);
+      } else {
+        settleSaveWaiters(saved);
       }
     }
-  }, [storageKey]);
+  }, [settleSaveWaiters, storageKey]);
 
   useEffect(() => { runSaveRef.current = runSave; }, [runSave]);
 
@@ -155,7 +170,13 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
 
   useEffect(() => () => {
     if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
-  }, []);
+    settleSaveWaiters(false);
+  }, [settleSaveWaiters]);
 
-  return { state, message, saveNow: runSave };
+  const saveNow = useCallback(() => new Promise<boolean>((resolve) => {
+    saveWaitersRef.current.push(resolve);
+    void runSaveRef.current();
+  }), []);
+
+  return { state, message, saveNow };
 }

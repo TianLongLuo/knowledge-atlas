@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  getDocument, updateDocument, deleteDocument, suggestDocumentTags,
+  getDocument, deleteDocument,
   DocumentDetail,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import { AutosaveStatus } from "@/components/autosave-status";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { MarkdownContent } from "@/components/markdown-content";
 import { readStoredDraft, useDocumentAutosave } from "@/lib/use-document-autosave";
+import { autoTagDocument } from "@/lib/auto-tags";
 import { ArrowLeft, Check, Pencil, Trash2, Loader2, Tag } from "lucide-react";
 import { toast } from "sonner";
 
@@ -60,14 +61,6 @@ export default function DocumentDetailPage() {
 
   useEffect(() => { loadDoc(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const addTagsInBackground = () => {
-    if (editTags.split(/[,，]/).some((tag) => tag.trim()) || !editContent.trim()) return;
-    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
-    void suggestDocumentTags({ title: editTitle, content: editContent })
-      .then(async ({ tags }) => { if (tags.length) await updateDocument(id, { tags: tags.join(", ") }); })
-      .catch(() => undefined);
-  };
-
   const draft = useMemo(() => ({ title: editTitle, content: editContent, tags: editTags }), [editContent, editTags, editTitle]);
   const initialDraft = useMemo(() => ({
     title: document?.title || "",
@@ -92,6 +85,30 @@ export default function DocumentDetailPage() {
     storageKey: `atlas:document-draft:${id}`,
     onSaved: handleAutosaved,
   });
+
+  const addTagsAfterSave = useCallback((savePromise: Promise<boolean>) => {
+    if (editTags.split(/[,，]/).some((tag) => tag.trim()) || !editContent.trim()) return;
+    const snapshot = { title: editTitle, content: editContent };
+    void savePromise.then(async (saved) => {
+      if (!saved) return;
+      const suggested = await autoTagDocument(id, snapshot.title, snapshot.content);
+      if (!suggested.length) return;
+      setEditTags(suggested.join(", "));
+      setDocument((current) => current ? { ...current, tags: suggested } : current);
+    }).catch(() => undefined);
+  }, [editContent, editTags, editTitle, id]);
+
+  const leaveDocument = useCallback(() => {
+    const savePromise = editing ? autosave.saveNow() : Promise.resolve(true);
+    addTagsAfterSave(savePromise);
+    router.push("/documents");
+  }, [addTagsAfterSave, autosave, editing, router]);
+
+  const finishEditing = useCallback(() => {
+    const savePromise = autosave.saveNow();
+    addTagsAfterSave(savePromise);
+    setEditing(false);
+  }, [addTagsAfterSave, autosave]);
 
   const beginEditing = () => {
     const stored = readStoredDraft(`atlas:document-draft:${id}`);
@@ -144,14 +161,14 @@ export default function DocumentDetailPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-5.5rem)] min-h-[680px] max-w-[1320px] flex-col overflow-hidden rounded-[20px] border border-white/85 bg-white/86 shadow-[0_22px_80px_rgba(71,85,105,.10)] backdrop-blur-sm">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/70 px-3 sm:px-4">
-        <Button variant="ghost" size="sm" onClick={() => { if (editing) void autosave.saveNow(); addTagsInBackground(); router.push("/documents"); }} className="h-8 text-slate-500">
+        <Button variant="ghost" size="sm" onClick={leaveDocument} className="h-8 text-slate-500">
           <ArrowLeft className="mr-1.5 h-4 w-4" />Documents
         </Button>
         <div className="flex items-center gap-1.5">
           {editing ? (
             <>
               <AutosaveStatus state={autosave.state} message={autosave.message} />
-              <Button variant="ghost" size="sm" className="h-8" onClick={() => { void autosave.saveNow(); addTagsInBackground(); setEditing(false); }}>
+              <Button variant="ghost" size="sm" className="h-8" onClick={finishEditing}>
                 <Check className="h-4 w-4 mr-1" />Done
               </Button>
             </>

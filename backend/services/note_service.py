@@ -477,7 +477,7 @@ class NoteService:
     async def _get_notion_database_schema(self, notion: Any) -> dict[str, str | None]:
         database_id = settings.notion_database_id
         cached = self._notion_schema_cache.get(database_id)
-        if cached:
+        if cached and cached.get("tags"):
             return cached
 
         database = await self._notion_call(
@@ -503,6 +503,15 @@ class NoteService:
             "tags": known_property({"tags", "tag", "标签", "標籤"}, "multi_select"),
             "category": known_property({"category", "type", "分类", "分類", "类别", "類別"}, "select"),
         }
+        if not schema["tags"]:
+            await self._notion_call(
+                "create Tags property",
+                lambda: notion.databases.update(
+                    database_id=database_id,
+                    properties={"Tags": {"multi_select": {}}},
+                ),
+            )
+            schema["tags"] = "Tags"
         self._notion_schema_cache[database_id] = schema
         return schema
 

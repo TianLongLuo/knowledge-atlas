@@ -17,6 +17,7 @@ import { AIWritingAssistant } from "@/components/ai-writing-assistant";
 import { AutosaveStatus } from "@/components/autosave-status";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { AutosaveDraft, AutosaveState, clearStoredDraft, readStoredDraft, useDocumentAutosave, writeStoredDraft } from "@/lib/use-document-autosave";
+import { autoTagDocument } from "@/lib/auto-tags";
 
 interface Props {
   onCreated?: () => void;
@@ -37,6 +38,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
   const [createState, setCreateState] = useState<AutosaveState>("idle");
   const [createMessage, setCreateMessage] = useState("");
   const creatingRef = useRef(false);
+  const creationPromiseRef = useRef<Promise<string | null> | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -45,36 +47,46 @@ export function CreateNoteDialog({ onCreated }: Props) {
 
   const draft = useMemo(() => ({ title, content, tags, category }), [category, content, tags, title]);
 
-  const ensureCreated = useCallback(async () => {
-    if (documentId || creatingRef.current || !title.trim() || !content.trim()) return;
+  const ensureCreated = useCallback(async (): Promise<string | null> => {
+    if (documentId) return documentId;
+    if (creatingRef.current) return creationPromiseRef.current;
+    if (!title.trim() || !content.trim()) return null;
     const snapshot = { title: title.trim(), content, tags: tags.trim(), category };
     creatingRef.current = true;
     setCreateState("saving");
     setCreateMessage("");
     writeStoredDraft(NEW_NOTE_DRAFT_KEY, snapshot);
-    try {
-      const created = await createNote({ ...snapshot, source: "manual" });
-      const nextId = String(created.id);
-      setDocumentId(nextId);
-      setCreatedBaseline(snapshot);
-      writeStoredDraft(NEW_NOTE_DRAFT_KEY, snapshot, nextId);
-      if (created.notion_sync?.status === "failed") {
-        setCreateState("warning");
-        setCreateMessage("Saved in Atlas · Notion will retry automatically");
-      } else {
-        setCreateState("saved");
-        setCreateMessage("");
+    const creation = (async () => {
+      try {
+        const created = await createNote({ ...snapshot, source: "manual" });
+        const nextId = String(created.id);
+        setDocumentId(nextId);
+        setCreatedBaseline(snapshot);
+        writeStoredDraft(NEW_NOTE_DRAFT_KEY, snapshot, nextId);
+        if (created.notion_sync?.status === "failed") {
+          setCreateState("warning");
+          setCreateMessage("Saved in Atlas · Notion will retry automatically");
+        } else {
+          setCreateState("saved");
+          setCreateMessage("");
+        }
+        router.refresh();
+        onCreated?.();
+        window.dispatchEvent(new CustomEvent("atlas:note-created", { detail: { id: nextId } }));
+        window.dispatchEvent(new CustomEvent("atlas:note-updated"));
+        return nextId;
+      } catch (cause) {
+        setCreateState("error");
+        setCreateMessage(cause instanceof Error ? cause.message : "Server unavailable; your draft is safe locally");
+        return null;
+      } finally {
+        creatingRef.current = false;
       }
-      router.refresh();
-      onCreated?.();
-      window.dispatchEvent(new CustomEvent("atlas:note-created", { detail: { id: nextId } }));
-      window.dispatchEvent(new CustomEvent("atlas:note-updated"));
-    } catch (cause) {
-      setCreateState("error");
-      setCreateMessage(cause instanceof Error ? cause.message : "Server unavailable; your draft is safe locally");
-    } finally {
-      creatingRef.current = false;
-    }
+    })();
+    creationPromiseRef.current = creation;
+    const nextId = await creation;
+    if (creationPromiseRef.current === creation) creationPromiseRef.current = null;
+    return nextId;
   }, [category, content, documentId, onCreated, router, tags, title]);
 
   const autosave = useDocumentAutosave({
@@ -128,8 +140,21 @@ export function CreateNoteDialog({ onCreated }: Props) {
       return;
     }
 
-    if (documentId) void autosave.saveNow();
-    else if (title.trim() && content.trim()) void ensureCreated();
+    const snapshot = { title: title.trim(), content, tags: tags.trim() };
+    if (documentId) {
+      const savePromise = autosave.saveNow();
+      if (!snapshot.tags && snapshot.content.trim()) {
+        void savePromise.then((saved) => saved
+          ? autoTagDocument(documentId, snapshot.title, snapshot.content)
+          : undefined
+        ).catch(() => undefined);
+      }
+    } else if (snapshot.title && snapshot.content.trim()) {
+      void ensureCreated().then((nextId) => nextId && !snapshot.tags
+        ? autoTagDocument(nextId, snapshot.title, snapshot.content)
+        : undefined
+      ).catch(() => undefined);
+    }
     setOpen(false);
     if (documentId && ["saved", "warning"].includes(autosave.state)) {
       clearStoredDraft(NEW_NOTE_DRAFT_KEY);
@@ -145,9 +170,12 @@ export function CreateNoteDialog({ onCreated }: Props) {
 
   const openAsPage = () => {
     if (!documentId) return;
-    void autosave.saveNow();
-    setOpen(false);
-    router.push(`/documents/${documentId}?edit=1`);
+    const nextId = documentId;
+    void autosave.saveNow().then((saved) => {
+      if (!saved) return;
+      setOpen(false);
+      router.push(`/documents/${nextId}?edit=1`);
+    });
   };
 
   return (

@@ -126,13 +126,14 @@ class NotionSyncService:
         # Get Notion URL
         url = page.get("url", "")
 
-        # Extract metadata from page properties
-        metadata = {
+        # Extract metadata from page properties. Atlas-generated tags remain
+        # canonical when the Notion database has no explicit Tags property.
+        has_notion_tags, notion_tags = self._extract_tag_property(properties)
+        incoming_metadata = {
             "url": url,
             "notion_page_id": page_id,
             "notion_last_edited": page.get("last_edited_time", ""),
             "created_time": page.get("created_time", ""),
-            "tags": self._extract_tags(properties),
         }
 
         # Check for existing document
@@ -144,8 +145,26 @@ class NotionSyncService:
         )
         existing = result.scalar_one_or_none()
 
+        metadata = self._merge_notion_metadata(
+            existing.metadata_ if existing else None,
+            incoming_metadata,
+            has_notion_tags,
+            notion_tags,
+        )
+
         if existing and existing.content_hash == content_hash:
-            logger.debug(f"Notion page {page_id} unchanged, skipping")
+            changed = existing.title != title or existing.metadata_ != metadata
+            if changed:
+                existing.title = title
+                existing.metadata_ = metadata
+                existing.updated_at = datetime.now(timezone.utc)
+                await db.commit()
+                from services.search_service import invalidate_search_cache
+                from routers.graph import invalidate_graph_cache
+
+                invalidate_search_cache()
+                invalidate_graph_cache()
+            logger.debug(f"Notion page {page_id} content unchanged, skipping reindex")
             return
 
         if existing:
@@ -409,16 +428,43 @@ class NotionSyncService:
     @staticmethod
     def _extract_tags(properties: dict) -> list[str]:
         """Extract tags from Notion properties."""
-        tags = []
+        return NotionSyncService._extract_tag_property(properties)[1]
+
+    @staticmethod
+    def _extract_tag_property(properties: dict) -> tuple[bool, list[str]]:
+        """Return whether Notion explicitly defines a tag field and its values."""
+        tags: list[str] = []
         for prop_name, prop_value in properties.items():
+            if prop_name.strip().casefold() not in {"tags", "tag", "标签", "標籤"}:
+                continue
             if prop_value.get("type") == "multi_select":
                 for item in prop_value.get("multi_select", []):
-                    tags.append(item.get("name", ""))
+                    name = str(item.get("name", "")).strip()
+                    if name:
+                        tags.append(name)
             elif prop_value.get("type") == "select":
                 select_val = prop_value.get("select")
                 if select_val:
-                    tags.append(select_val.get("name", ""))
-        return tags
+                    name = str(select_val.get("name", "")).strip()
+                    if name:
+                        tags.append(name)
+            return True, list(dict.fromkeys(tags))
+        return False, []
+
+    @staticmethod
+    def _merge_notion_metadata(
+        existing: dict | None,
+        incoming: dict,
+        has_notion_tags: bool,
+        notion_tags: list[str],
+    ) -> dict:
+        """Merge inbound Notion metadata without erasing Atlas-only fields."""
+        merged = {**(existing or {}), **incoming}
+        if has_notion_tags:
+            merged["tags"] = notion_tags
+        elif "tags" not in merged:
+            merged["tags"] = []
+        return merged
 
     @staticmethod
     def _get_embedding_model():
