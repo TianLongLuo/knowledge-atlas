@@ -69,6 +69,7 @@ export interface DocumentItem {
   tags: string[];
   note_at: string;
   category: string;
+  content: string;
 }
 export interface DocumentListResponse { items: DocumentItem[]; total: number; page: number; page_size: number }
 export interface ChunkItem { id: number; document_id: number; chunk_index: number; chunk_text: string; token_count: number }
@@ -104,6 +105,7 @@ function mapDocument(doc: RawDocument): DocumentItem {
     tags,
     note_at: String(noteAt || doc.created_at || doc.updated_at || new Date(0).toISOString()),
     category: String(doc.metadata?._category || doc.metadata?.category || doc.metadata?.group || "Uncategorized"),
+    content,
   };
 }
 

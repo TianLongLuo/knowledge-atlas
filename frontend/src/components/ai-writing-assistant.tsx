@@ -11,7 +11,6 @@ interface Props {
   content: string;
   documentId?: number;
   onApplyTitle: (title: string) => void;
-  onExpandedChange?: (expanded: boolean) => void;
 }
 
 function IssueList({ items, empty }: { items: WritingIssue[]; empty: string }) {
@@ -25,7 +24,7 @@ function IssueList({ items, empty }: { items: WritingIssue[]; empty: string }) {
   ))}</div>;
 }
 
-export function AIWritingAssistant({ title, content, documentId, onApplyTitle, onExpandedChange }: Props) {
+export function AIWritingAssistant({ title, content, documentId, onApplyTitle }: Props) {
   const [result, setResult] = useState<WritingAssistResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -79,12 +78,6 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle, o
     : 0;
   const expanded = hovered || pinned;
 
-  useEffect(() => {
-    onExpandedChange?.(expanded);
-  }, [expanded, onExpandedChange]);
-
-  useEffect(() => () => onExpandedChange?.(false), [onExpandedChange]);
-
   const openAfterIntent = () => {
     if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
     if (pinned || hovered) return;
@@ -94,7 +87,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle, o
   const closeAfterLeave = () => {
     if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
     if (pinned) return;
-    leaveTimer.current = window.setTimeout(() => setHovered(false), 420);
+    leaveTimer.current = window.setTimeout(() => setHovered(false), 700);
   };
 
   const keepOpen = () => {
@@ -104,16 +97,16 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle, o
 
   return (
     <div
-      className="pointer-events-none flex min-h-[42vh] w-[340px] max-w-[calc(100vw-2rem)] shrink-0 items-stretch overflow-hidden"
+      className="pointer-events-none flex h-full min-h-0 w-[360px] max-w-[calc(100vw-2rem)] shrink-0 items-stretch overflow-hidden"
     >
       <aside
         aria-hidden={!expanded}
         onMouseEnter={keepOpen}
         onMouseLeave={closeAfterLeave}
-        className={`min-w-0 flex-1 overflow-hidden rounded-2xl border bg-white/96 shadow-[0_20px_60px_rgba(51,65,85,0.12)] backdrop-blur-xl transition-[opacity,transform,border-color] duration-300 ease-out ${expanded ? "pointer-events-auto mr-2 translate-x-0 border-slate-200/90 opacity-100" : "translate-x-4 border-transparent opacity-0"}`}
+        className={`min-h-0 min-w-0 flex-1 overflow-hidden overscroll-contain rounded-2xl border border-transparent bg-transparent shadow-none transition-[opacity,transform] duration-700 ease-out ${expanded ? "pointer-events-auto mr-2 translate-x-0 opacity-100" : "translate-x-8 opacity-0"}`}
       >
-        <div className="h-full min-w-[250px] p-4">
-        <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="flex h-full min-h-0 min-w-[250px] flex-col rounded-2xl bg-white/68 p-4 backdrop-blur-md">
+        <div className="mb-4 flex shrink-0 items-center justify-between gap-2">
           <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-blue-600" /><h3 className="text-sm font-semibold text-slate-900">Writing insights</h3></div>
           <Button type="button" size="sm" variant="ghost" onClick={() => void analyze(true)} disabled={loading || content.trim().length < 20} title="Refresh analysis">
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -122,7 +115,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle, o
         {!result && !loading && !error && <p className="text-xs leading-5 text-slate-500">Keep writing. Atlas analyzes quietly after you pause.</p>}
         {loading && !result && <div className="flex items-center gap-2 py-8 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" />Reading the draft…</div>}
         {error && <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{error}</p>}
-        {result && <div className="max-h-[min(64vh,620px)] space-y-5 overflow-y-auto pr-1">
+        {result && <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain pr-1">
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-blue-700"><Sparkles className="h-3.5 w-3.5" />Suggested titles</div>
           <div className="space-y-2">{result.suggested_titles.map((suggestion) => <button type="button" key={suggestion} onClick={() => onApplyTitle(suggestion)} className="flex w-full items-start justify-between gap-2 rounded-xl border border-blue-100 bg-white/80 p-3 text-left text-sm text-slate-800 transition hover:border-blue-300 hover:bg-white"><span>{suggestion}</span><Check className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /></button>)}</div>

@@ -29,12 +29,51 @@ const sourceTypes = [
   { value: "api", label: "API" },
 ];
 
+function clientFilterDocuments(items: DocumentItem[], filters: {
+  search: string; sourceType: string; dateFrom: string; dateTo: string; dateField: "note_date" | "system_created";
+  category: string; tag: string; sortBy: "note_date" | "system_created" | "updated_at" | "title"; sortOrder: "asc" | "desc";
+}) {
+  const needle = filters.search.trim().toLocaleLowerCase();
+  const from = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`).getTime() : null;
+  const to = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999`).getTime() : null;
+  const filtered = items.filter((item) => {
+    if (filters.sourceType !== "all" && item.source_type !== filters.sourceType) return false;
+    if (filters.category !== "all" && (item.category || "").toLocaleLowerCase() !== filters.category.toLocaleLowerCase()) return false;
+    if (filters.tag !== "all" && !(item.tags || []).some((value) => value.toLocaleLowerCase() === filters.tag.toLocaleLowerCase())) return false;
+    if (needle && ![item.title || "", item.content || "", item.category || "", (item.tags || []).join(" ")].join("\n").toLocaleLowerCase().includes(needle)) return false;
+    const dateValue = new Date(filters.dateField === "note_date" ? item.note_at : item.created_at).getTime();
+    if (from !== null && (!Number.isFinite(dateValue) || dateValue < from)) return false;
+    if (to !== null && (!Number.isFinite(dateValue) || dateValue > to)) return false;
+    return true;
+  });
+  const direction = filters.sortOrder === "asc" ? 1 : -1;
+  filtered.sort((left, right) => {
+    if (filters.sortBy === "title") return left.title.localeCompare(right.title) * direction;
+    const leftDate = new Date(filters.sortBy === "note_date" ? left.note_at : filters.sortBy === "system_created" ? left.created_at : left.updated_at).getTime() || 0;
+    const rightDate = new Date(filters.sortBy === "note_date" ? right.note_at : filters.sortBy === "system_created" ? right.created_at : right.updated_at).getTime() || 0;
+    return (leftDate - rightDate) * direction;
+  });
+  return filtered;
+}
+
+async function loadCompatibilityDocumentSet() {
+  const first = await getDocuments({ page: 1, page_size: 100 });
+  const items = [...first.items];
+  const pages = Math.ceil(first.total / 100);
+  for (let page = 2; page <= pages; page += 1) {
+    const next = await getDocuments({ page, page_size: 100 });
+    items.push(...next.items);
+  }
+  return items;
+}
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [sourceType, setSourceType] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -49,40 +88,63 @@ export default function DocumentsPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState("");
+  const [tagSaveState, setTagSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const tagSaveVersionRef = useRef(0);
   const { openDocument } = useNoteReader();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadMoreRequestedRef = useRef(false);
   const queryVersionRef = useRef(0);
   const pageSize = 20;
 
-  const saveInlineTags = async (documentId: string) => {
+  const saveInlineTags = useCallback(async (documentId: string, close = false) => {
     const normalized = tagDraft.split(/[,，]/).map((value) => value.trim()).filter(Boolean).join(", ");
+    const version = ++tagSaveVersionRef.current;
+    setTagSaveState("saving");
     try {
       await updateDocument(documentId, { tags: normalized });
+      if (version !== tagSaveVersionRef.current) return;
       setDocuments((current) => current.map((item) => item.id === documentId
         ? { ...item, tags: normalized ? normalized.split(", ") : [] }
         : item));
-      setEditingTags(null);
-      toast.success("Tags updated", { duration: 1400 });
+      setTagSaveState("saved");
+      if (close) setEditingTags(null);
     } catch (error) {
+      if (version !== tagSaveVersionRef.current) return;
+      setTagSaveState("error");
       toast.error(error instanceof Error ? error.message : "Unable to update tags");
     }
-  };
+  }, [tagDraft]);
+
+  useEffect(() => {
+    if (!editingTags) return;
+    setTagSaveState("idle");
+    const timer = window.setTimeout(() => void saveInlineTags(editingTags), 850);
+    return () => window.clearTimeout(timer);
+  }, [editingTags, saveInlineTags]);
 
   const loadDocuments = useCallback(async (pageToLoad: number, replace: boolean, requestVersion = queryVersionRef.current) => {
     if (replace) setLoading(true); else setLoadingMore(true);
+    setLoadError("");
     try {
       const params: Record<string, string | number> = { page: pageToLoad, page_size: pageSize };
       if (search.trim()) params.search = search.trim();
       if (sourceType !== "all") params.source_type = sourceType;
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
-      params.date_field = dateField;
+      if (dateFrom || dateTo) params.date_field = dateField;
       if (category !== "all") params.category = category;
       if (tag !== "all") params.tag = tag;
-      params.sort_by = sortBy;
-      params.sort_order = sortOrder;
-      const data = await getDocuments(params as Parameters<typeof getDocuments>[0]);
+      if (sortBy !== "note_date") params.sort_by = sortBy;
+      if (sortOrder !== "desc") params.sort_order = sortOrder;
+      let data = await getDocuments(params as Parameters<typeof getDocuments>[0]);
+      if (data.total === 0) {
+        const allItems = await loadCompatibilityDocumentSet();
+        if (allItems.length) {
+          const compatible = clientFilterDocuments(allItems, { search, sourceType, dateFrom, dateTo, dateField, category, tag, sortBy, sortOrder });
+          const start = (pageToLoad - 1) * pageSize;
+          data = { items: compatible.slice(start, start + pageSize), total: compatible.length, page: pageToLoad, page_size: pageSize };
+        }
+      }
       if (requestVersion !== queryVersionRef.current) return;
       setDocuments((current) => {
         if (replace) return data.items;
@@ -92,6 +154,7 @@ export default function DocumentsPage() {
       setTotal(data.total);
     } catch (err) {
       console.error("Failed to load documents:", err);
+      if (requestVersion === queryVersionRef.current) setLoadError(err instanceof Error ? err.message : "Unable to load documents");
     } finally {
       if (requestVersion === queryVersionRef.current) {
         if (replace) setLoading(false); else setLoadingMore(false);
@@ -247,8 +310,10 @@ export default function DocumentsPage() {
             <div className="space-y-3">
               {[...Array(10)].map((_, i) => (<Skeleton key={i} className="h-16 w-full" />))}
             </div>
+          ) : loadError ? (
+            <div className="py-10 text-center"><p className="text-sm text-red-600">{loadError}</p><Button variant="outline" size="sm" className="mt-3" onClick={() => { const version = ++queryVersionRef.current; void loadDocuments(1, true, version); }}>Retry</Button></div>
           ) : documents.length === 0 ? (
-            <p className="text-muted-foreground text-sm text-center py-8">No documents yet</p>
+            <div className="py-10 text-center"><p className="text-sm text-muted-foreground">No notes match the current filters.</p><Button variant="ghost" size="sm" className="mt-2" onClick={() => { setSearch(""); setSourceType("all"); setCategory("all"); setTag("all"); setDateFrom(""); setDateTo(""); }}>Clear filters</Button></div>
           ) : (
             <div className="space-y-1">
               {documents.map((doc) => (
@@ -270,17 +335,19 @@ export default function DocumentsPage() {
                         {doc.tags.slice(0, 3).map((value) => <Badge key={value} variant="secondary" className="text-[10px]">#{value}</Badge>)}
                         {editingTags === doc.id ? <Input
                           value={tagDraft}
-                          onChange={(event) => setTagDraft(event.target.value)}
+                          onChange={(event) => { setTagDraft(event.target.value); setTagSaveState("idle"); }}
                           onClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveInlineTags(doc.id); } if (event.key === "Escape") setEditingTags(null); }}
+                          onBlur={() => void saveInlineTags(doc.id, true)}
+                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveInlineTags(doc.id, true); } if (event.key === "Escape") setEditingTags(null); }}
                           placeholder="tag, tag"
                           autoFocus
                           className="h-7 w-44 text-xs"
                         /> : <button
                           type="button"
-                          onClick={(event) => { event.stopPropagation(); setEditingTags(doc.id); setTagDraft(doc.tags.join(", ")); }}
+                          onClick={(event) => { event.stopPropagation(); setEditingTags(doc.id); setTagDraft(doc.tags.join(", ")); setTagSaveState("idle"); }}
                           className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] text-slate-500 opacity-0 transition hover:border-blue-300 hover:text-blue-600 group-hover:opacity-100"
                         >+ tag</button>}
+                        {editingTags === doc.id && tagSaveState !== "idle" && <span className={`text-[10px] ${tagSaveState === "error" ? "text-red-500" : tagSaveState === "saved" ? "text-emerald-600" : "text-blue-500"}`}>{tagSaveState === "saving" ? "Saving…" : tagSaveState === "saved" ? "Saved" : "Retry needed"}</span>}
                       </div>
                     </div>
                   </div>

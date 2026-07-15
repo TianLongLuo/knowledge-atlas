@@ -4,14 +4,16 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useRouter } from "next/navigation";
 import { deleteDocument, getDocument, suggestDocumentTags, updateDocument } from "@/lib/api";
 import type { DocumentDetail } from "@/lib/api";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownContent } from "@/components/markdown-content";
 import { AIWritingAssistant } from "@/components/ai-writing-assistant";
-import { Bot, Loader2, Pencil, Save, Tag, Trash2, X } from "lucide-react";
+import { AutosaveStatus } from "@/components/autosave-status";
+import { MarkdownEditor } from "@/components/markdown-editor";
+import { readStoredDraft, useDocumentAutosave } from "@/lib/use-document-autosave";
+import { Bot, Check, Loader2, Maximize2, Pencil, Tag, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 interface NoteReaderContextValue {
@@ -37,10 +39,8 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
-  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [assistantExpanded, setAssistantExpanded] = useState(false);
 
   const closeImmediately = useCallback(() => {
     setDocumentId(null);
@@ -49,22 +49,6 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     setConfirmDelete(false);
     setError("");
   }, []);
-
-  const closeDocument = useCallback(() => {
-    const snapshot = documentId && document && !tags.split(/[,，]/).some((tag) => tag.trim())
-      ? { id: documentId, title: editing ? title : document.title, content: editing ? content : document.content }
-      : null;
-    closeImmediately();
-    if (!snapshot || !snapshot.content.trim()) return;
-    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
-    void suggestDocumentTags({ title: snapshot.title, content: snapshot.content })
-      .then(async ({ tags: suggested }) => {
-        if (!suggested.length) return;
-        await updateDocument(snapshot.id, { tags: suggested.join(", ") });
-        window.dispatchEvent(new CustomEvent("atlas:note-updated"));
-      })
-      .catch(() => undefined);
-  }, [closeImmediately, content, document, documentId, editing, tags, title]);
 
   const openDocument = useCallback((id: string | number) => {
     setDocumentId(String(id));
@@ -93,30 +77,70 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     if (documentId) void loadDocument(documentId);
   }, [documentId, loadDocument]);
 
-  const save = async () => {
-    if (!documentId || !title.trim()) return;
-    setSaving(true);
-    try {
-      await updateDocument(documentId, { title: title.trim(), content, tags });
-      await loadDocument(documentId);
-      setEditing(false);
-      window.dispatchEvent(new CustomEvent("atlas:note-updated"));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to save this note.");
-    } finally {
-      setSaving(false);
+  const draft = useMemo(() => ({ title, content, tags }), [content, tags, title]);
+  const initialDraft = useMemo(() => ({
+    title: document?.title || "",
+    content: document?.content || "",
+    tags: document?.tags.join(", ") || "",
+  }), [document]);
+  const handleAutosaved = useCallback((next: { title: string; content: string; tags: string }) => {
+    setDocument((current) => current ? {
+      ...current,
+      title: next.title.trim(),
+      content: next.content,
+      tags: next.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+      updated_at: new Date().toISOString(),
+    } : current);
+    window.dispatchEvent(new CustomEvent("atlas:note-updated"));
+  }, []);
+  const autosave = useDocumentAutosave({
+    id: documentId,
+    enabled: editing && Boolean(document),
+    draft,
+    initialDraft,
+    storageKey: `atlas:document-draft:${documentId || "none"}`,
+    onSaved: handleAutosaved,
+  });
+
+  const closeDocument = useCallback(() => {
+    if (editing) void autosave.saveNow();
+    const snapshot = documentId && document && !tags.split(/[,，]/).some((tag) => tag.trim())
+      ? { id: documentId, title: editing ? title : document.title, content: editing ? content : document.content }
+      : null;
+    closeImmediately();
+    if (!snapshot || !snapshot.content.trim()) return;
+    toast("No tags yet — Atlas is adding a few in the background.", { duration: 2200 });
+    void suggestDocumentTags({ title: snapshot.title, content: snapshot.content })
+      .then(async ({ tags: suggested }) => {
+        if (!suggested.length) return;
+        await updateDocument(snapshot.id, { tags: suggested.join(", ") });
+        window.dispatchEvent(new CustomEvent("atlas:note-updated"));
+      })
+      .catch(() => undefined);
+  }, [autosave, closeImmediately, content, document, documentId, editing, tags, title]);
+
+  const beginEditing = () => {
+    if (!documentId || !document) return;
+    const stored = readStoredDraft(`atlas:document-draft:${documentId}`);
+    if (stored) {
+      setTitle(stored.title);
+      setContent(stored.content);
+      setTags(stored.tags);
+      toast("Recovered your unsaved local draft.", { duration: 1800 });
     }
+    setEditing(true);
   };
 
   const remove = async () => {
     if (!documentId) return;
     setDeleting(true);
+    setError("");
     try {
       await deleteDocument(documentId);
       closeDocument();
       window.dispatchEvent(new CustomEvent("atlas:note-deleted"));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to delete this note.");
+      toast.error(cause instanceof Error ? cause.message : "Unable to delete this note.");
     } finally {
       setDeleting(false);
     }
@@ -128,54 +152,44 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
     <NoteReaderContext.Provider value={value}>
       {children}
       <Dialog open={Boolean(documentId)} onOpenChange={(open) => { if (!open) closeDocument(); }}>
-        <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden border-white/90 bg-white/95 p-0 shadow-[0_30px_100px_rgba(56,76,120,0.25)] backdrop-blur-xl sm:max-w-6xl">
-          <div className="border-b bg-[linear-gradient(120deg,rgba(219,238,255,.75),rgba(255,239,220,.58),rgba(255,225,239,.55))] px-7 py-5">
-            <DialogHeader>
-              {editing ? (
-                <div className="mr-12 space-y-2">
-                  <Input value={title} onChange={(event) => setTitle(event.target.value)} className="bg-white/75 text-xl font-semibold" />
-                  <div className="relative"><Tag className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Add tags, separated by commas" className="bg-white/65 pl-9 text-sm" /></div>
-                </div>
-              ) : <DialogTitle className="pr-12 text-xl leading-snug">{document?.title || "Note"}</DialogTitle>}
-              <DialogDescription className="flex items-center gap-2">
-                {document && <><Badge variant="outline" className="bg-white/60">{document.source_type}</Badge>{document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}<span>Updated {new Date(document.updated_at).toLocaleString()}</span></>}
-              </DialogDescription>
-            </DialogHeader>
-          </div>
+        <DialogContent showCloseButton={false} overlayClassName="bg-slate-950/45 backdrop-blur-[2px]" className="flex h-[min(92vh,960px)] max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[18px] border-white/80 bg-white p-0 shadow-[0_36px_120px_rgba(15,23,42,.34)] sm:max-w-[min(88vw,1320px)]">
+          <header className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/70 px-4">
+            <DialogTitle className="max-w-[40vw] truncate text-sm font-medium text-slate-500">{document?.title || "Note"}</DialogTitle>
+            <div className="flex items-center gap-1.5">
+              {editing && <AutosaveStatus state={autosave.state} message={autosave.message} />}
+              {document && !editing && <Button variant="ghost" size="sm" className="h-8" onClick={() => { closeDocument(); router.push(`/agent?doc=${document.id}`); }}><Bot className="mr-1.5 h-4 w-4" />Ask AI</Button>}
+              {document && <Button variant="ghost" size="icon-sm" onClick={() => { if (editing) void autosave.saveNow(); closeImmediately(); router.push(`/documents/${document.id}?edit=1`); }} aria-label="Open as full page" title="Open as full page"><Maximize2 className="h-4 w-4" /></Button>}
+              {document && (editing ? <Button variant="ghost" size="sm" className="h-8" onClick={() => { void autosave.saveNow(); setEditing(false); }}><Check className="mr-1.5 h-4 w-4" />Done</Button> : <Button variant="ghost" size="sm" className="h-8" onClick={beginEditing}><Pencil className="mr-1.5 h-4 w-4" />Edit</Button>)}
+              <Button type="button" variant="ghost" size="icon-sm" onClick={closeDocument} aria-label="Close note"><X className="h-4 w-4" /></Button>
+            </div>
+          </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-6 sm:px-10" style={{ height: "min(68vh, 760px)" }}>
+          <div className={`min-h-0 flex-1 overscroll-contain ${editing ? "overflow-hidden px-4 sm:px-7" : "overflow-y-auto"}`}>
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
-            {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+            {error && !document && <p className="m-8 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
-              <div className="relative mx-auto min-h-[55vh] w-full max-w-[1020px]">
-                <div className={`mx-auto w-full max-w-[650px] transform-gpu transition-transform duration-300 ease-out ${assistantExpanded ? "lg:-translate-x-[185px]" : "translate-x-0"}`}>
-                  <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[55vh] w-full resize-y bg-white text-sm leading-7" />
-                </div>
-                <div className="absolute inset-y-0 right-0 z-10 flex items-start">
-                  <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} onExpandedChange={setAssistantExpanded} />
+              <div className="relative mx-auto h-full min-h-0 w-full max-w-[1200px]">
+                <article className="mx-auto flex h-full min-h-0 w-full max-w-[820px] flex-col">
+                  <div className="shrink-0 px-5 pb-3 pt-10 sm:px-10">
+                    <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0" />
+                    <div className="relative mt-4"><Tag className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Add tags" className="h-8 border-0 bg-slate-50 pl-8 shadow-none hover:bg-slate-100 focus-visible:ring-1" /></div>
+                  </div>
+                  <MarkdownEditor value={content} onChange={setContent} className="min-h-0 flex-1 border-t border-slate-100" />
+                </article>
+                <div className="pointer-events-none absolute inset-y-5 right-0 z-10 flex min-h-0 items-start">
+                  <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} />
                 </div>
               </div>
             ) : (
-              <MarkdownContent>{document.content || "This note has no readable content."}</MarkdownContent>
+              <article className="mx-auto max-w-4xl px-8 pb-20 pt-14 sm:px-14">
+                <h1 className="font-heading text-4xl font-semibold tracking-tight text-slate-900">{document.title}</h1>
+                <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-400"><Badge variant="outline">{document.source_type}</Badge>{document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}<span>Updated {new Date(document.updated_at).toLocaleString()}</span></div>
+                <MarkdownContent className="mt-10">{document.content || "This note has no readable content."}</MarkdownContent>
+              </article>
             ))}
           </div>
-
-          {document && <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-slate-50/75 px-7 py-4">
-            <Button variant="outline" onClick={() => { closeDocument(); router.push(`/agent?doc=${document.id}`); }}>
-              <Bot className="mr-2 h-4 w-4" />Ask AI about this note
-            </Button>
-            <div className="flex items-center gap-2">
-              {editing ? <>
-                <Button onClick={() => void save()} disabled={saving || !title.trim()}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Save</Button>
-                <Button variant="ghost" onClick={() => { setEditing(false); setTitle(document.title); setContent(document.content); setTags(document.tags.join(", ")); }}><X className="mr-2 h-4 w-4" />Cancel</Button>
-              </> : <>
-                <Button variant="outline" onClick={() => setEditing(true)}><Pencil className="mr-2 h-4 w-4" />Edit</Button>
-                {confirmDelete ? <>
-                  <Button variant="destructive" onClick={() => void remove()} disabled={deleting}>{deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Confirm delete</Button>
-                  <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-                </> : <Button variant="ghost" className="text-red-600 hover:text-red-700" onClick={() => setConfirmDelete(true)}><Trash2 className="mr-2 h-4 w-4" />Delete</Button>}
-              </>}
-            </div>
+          {document && !editing && <div className="absolute bottom-4 right-5 flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/90 p-1 shadow-sm backdrop-blur">
+            {confirmDelete ? <><Button size="sm" variant="destructive" onClick={() => void remove()} disabled={deleting}>{deleting && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}Confirm delete</Button><Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button></> : <Button size="icon-sm" variant="ghost" className="text-slate-400 hover:text-red-600" onClick={() => setConfirmDelete(true)} title="Delete note"><Trash2 className="h-4 w-4" /></Button>}
           </div>}
         </DialogContent>
       </Dialog>

@@ -1,22 +1,21 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   getDocument, updateDocument, deleteDocument, suggestDocumentTags,
   DocumentDetail,
 } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AIWritingAssistant } from "@/components/ai-writing-assistant";
-import {
-  ArrowLeft, FileText, Calendar, HardDrive,
-  Pencil, Trash2, Save, X, Loader2,
-} from "lucide-react";
+import { AutosaveStatus } from "@/components/autosave-status";
+import { MarkdownEditor } from "@/components/markdown-editor";
+import { MarkdownContent } from "@/components/markdown-content";
+import { readStoredDraft, useDocumentAutosave } from "@/lib/use-document-autosave";
+import { ArrowLeft, Check, Pencil, Trash2, Loader2, Tag } from "lucide-react";
 import { toast } from "sonner";
 
 export default function DocumentDetailPage() {
@@ -32,10 +31,8 @@ export default function DocumentDetailPage() {
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
   const [editTags, setEditTags] = useState("");
-  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [assistantExpanded, setAssistantExpanded] = useState(false);
 
   const loadDoc = async () => {
     setLoading(true);
@@ -45,6 +42,15 @@ export default function DocumentDetailPage() {
       setEditTitle(doc.title);
       setEditContent(doc.content || "");
       setEditTags(doc.tags.join(", "));
+      if (new URLSearchParams(window.location.search).get("edit") === "1") {
+        const stored = readStoredDraft(`atlas:document-draft:${id}`);
+        if (stored) {
+          setEditTitle(stored.title);
+          setEditContent(stored.content);
+          setEditTags(stored.tags);
+        }
+        setEditing(true);
+      }
     } catch (err) {
       console.error("Failed to load:", err);
     } finally {
@@ -62,22 +68,40 @@ export default function DocumentDetailPage() {
       .catch(() => undefined);
   };
 
-  const handleSave = async () => {
-    if (!editTitle.trim()) return;
-    setSaving(true);
-    try {
-      await updateDocument(id, {
-        title: editTitle.trim(),
-        content: editContent,
-        tags: editTags,
-      });
-      setEditing(false);
-      await loadDoc();
-    } catch (err) {
-      console.error("Save failed:", err);
-    } finally {
-      setSaving(false);
+  const draft = useMemo(() => ({ title: editTitle, content: editContent, tags: editTags }), [editContent, editTags, editTitle]);
+  const initialDraft = useMemo(() => ({
+    title: document?.title || "",
+    content: document?.content || "",
+    tags: document?.tags.join(", ") || "",
+  }), [document]);
+  const handleAutosaved = useCallback((next: { title: string; content: string; tags: string }) => {
+    setDocument((current) => current ? {
+      ...current,
+      title: next.title.trim(),
+      content: next.content,
+      tags: next.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+      updated_at: new Date().toISOString(),
+    } : current);
+    window.dispatchEvent(new CustomEvent("atlas:note-updated"));
+  }, []);
+  const autosave = useDocumentAutosave({
+    id,
+    enabled: editing && Boolean(document),
+    draft,
+    initialDraft,
+    storageKey: `atlas:document-draft:${id}`,
+    onSaved: handleAutosaved,
+  });
+
+  const beginEditing = () => {
+    const stored = readStoredDraft(`atlas:document-draft:${id}`);
+    if (stored) {
+      setEditTitle(stored.title);
+      setEditContent(stored.content);
+      setEditTags(stored.tags);
+      toast("Recovered your unsaved local draft.", { duration: 1800 });
     }
+    setEditing(true);
   };
 
   const handleDelete = async () => {
@@ -117,57 +141,23 @@ export default function DocumentDetailPage() {
     return labels[t] || t;
   };
 
-  const formatSize = (bytes: number) => {
-    if (!bytes) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => { addTagsInBackground(); router.push("/documents"); }}>
-          <ArrowLeft className="h-5 w-5" />
+    <div className="mx-auto flex h-[calc(100vh-5.5rem)] min-h-[680px] max-w-[1320px] flex-col overflow-hidden rounded-[20px] border border-white/85 bg-white/86 shadow-[0_22px_80px_rgba(71,85,105,.10)] backdrop-blur-sm">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200/70 px-3 sm:px-4">
+        <Button variant="ghost" size="sm" onClick={() => { if (editing) void autosave.saveNow(); addTagsInBackground(); router.push("/documents"); }} className="h-8 text-slate-500">
+          <ArrowLeft className="mr-1.5 h-4 w-4" />Documents
         </Button>
-
-        {editing ? (
-          <div className="flex-1 space-y-2">
-            <Input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              className="text-xl font-bold bg-background/70"
-              placeholder="Title"
-            />
-            <Input value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="Tags, separated by commas" className="bg-background/70" />
-          </div>
-        ) : (
-          <div className="flex-1">
-            <h1 className="text-2xl font-bold tracking-tight">{document.title}</h1>
-            <div className="flex items-center gap-2 mt-1">
-              <Badge variant="outline">{sourceLabel(document.source_type)}</Badge>
-              {document.status && <Badge variant="secondary">{document.status}</Badge>}
-              {document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}
-            </div>
-          </div>
-        )}
-
-        {/* Action buttons */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {editing ? (
             <>
-              <Button onClick={handleSave} disabled={saving} size="sm">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
-                Save
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => { addTagsInBackground(); setEditing(false); setEditTitle(document.title); setEditContent(document.content || ""); setEditTags(document.tags.join(", ")); }}>
-                <X className="h-4 w-4 mr-1" />Cancel
+              <AutosaveStatus state={autosave.state} message={autosave.message} />
+              <Button variant="ghost" size="sm" className="h-8" onClick={() => { void autosave.saveNow(); addTagsInBackground(); setEditing(false); }}>
+                <Check className="h-4 w-4 mr-1" />Done
               </Button>
             </>
           ) : (
             <>
-              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Button variant="ghost" size="sm" className="h-8" onClick={beginEditing}>
                 <Pencil className="h-4 w-4 mr-1" />Edit
               </Button>
               {confirmDelete ? (
@@ -178,75 +168,42 @@ export default function DocumentDetailPage() {
                   <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
                 </div>
               ) : (
-                <Button variant="ghost" size="sm"
-                  className="text-slate-500 hover:text-red-400"
+                <Button variant="ghost" size="icon-sm"
+                  className="text-slate-400 hover:text-red-600"
                   onClick={() => setConfirmDelete(true)}>
-                  <Trash2 className="h-4 w-4 mr-1" />Delete
+                  <Trash2 className="h-4 w-4" /><span className="sr-only">Delete</span>
                 </Button>
               )}
             </>
           )}
         </div>
-      </div>
+      </header>
 
-      {/* Metadata */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-muted-foreground" />
-              <div>
-                <p className="text-xs text-muted-foreground">Source type</p>
-                <p className="text-sm font-medium">{sourceLabel(document.source_type)}</p>
+      {editing ? (
+        <div className="relative mx-auto min-h-0 w-full max-w-[1200px] flex-1 overflow-hidden px-4 sm:px-7">
+          <article className="mx-auto flex h-full min-h-0 w-full max-w-[820px] flex-col">
+            <div className="shrink-0 px-5 pb-3 pt-10 sm:px-10">
+              <Input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0" />
+              <div className="mt-4 flex items-center gap-2">
+                <div className="relative min-w-0 flex-1"><Tag className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="Add tags" className="h-8 border-0 bg-slate-50 pl-8 shadow-none hover:bg-slate-100 focus-visible:ring-1" /></div>
+                <span className="text-xs tabular-nums text-slate-400">{editContent.length.toLocaleString()} characters</span>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <HardDrive className="h-4 w-4 text-muted-foreground" />
-              <div>
-                <p className="text-xs text-muted-foreground">File size</p>
-                <p className="text-sm font-medium">{formatSize(document.file_size || 0)}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-muted-foreground" />
-              <div>
-                <p className="text-xs text-muted-foreground">Created</p>
-                <p className="text-sm font-medium">{new Date(document.created_at).toLocaleString("en-US")}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-muted-foreground" />
-              <div>
-                <p className="text-xs text-muted-foreground">Updated</p>
-                <p className="text-sm font-medium">{new Date(document.updated_at || document.created_at).toLocaleString("en-US")}</p>
-              </div>
-            </div>
+            <MarkdownEditor value={editContent} onChange={setEditContent} placeholder="Start writing…" className="min-h-0 flex-1 border-t border-slate-100" />
+          </article>
+          <div className="pointer-events-none absolute inset-y-5 right-0 z-10 flex min-h-0 items-start">
+            <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Content */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Document content</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {editing ? (
-            <div className="relative mx-auto min-h-[520px] w-full max-w-[1020px]">
-              <div className={`mx-auto w-full max-w-[650px] transform-gpu transition-transform duration-300 ease-out ${assistantExpanded ? "lg:-translate-x-[185px]" : "translate-x-0"}`}>
-                <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-[520px] w-full resize-y bg-background/70 text-sm leading-7" placeholder="Document content..." />
-              </div>
-              <div className="absolute inset-y-0 right-0 z-10 flex items-start">
-                <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} onExpandedChange={setAssistantExpanded} />
-              </div>
-            </div>
-          ) : (
-            <div className="note-body max-w-none whitespace-pre-wrap text-sm leading-relaxed">
-              {document.content || "No content"}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <article className="mx-auto max-w-4xl px-8 pb-20 pt-14 sm:px-14">
+            <h1 className="font-heading text-4xl font-semibold tracking-tight text-slate-900">{document.title}</h1>
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-400"><Badge variant="outline">{sourceLabel(document.source_type)}</Badge>{document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}<span>Updated {new Date(document.updated_at || document.created_at).toLocaleString()}</span></div>
+            <MarkdownContent className="mt-10">{document.content || "No content"}</MarkdownContent>
+          </article>
+        </div>
+      )}
     </div>
   );
 }

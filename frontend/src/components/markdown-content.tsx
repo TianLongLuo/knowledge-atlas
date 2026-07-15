@@ -12,10 +12,10 @@ export function MarkdownContent({ children, className = "" }: { children: string
           h1: ({ children }) => <h1 className="mt-7 text-2xl font-semibold tracking-tight text-slate-900 first:mt-0">{children}</h1>,
           h2: ({ children }) => <h2 className="mt-7 border-b border-slate-200/80 pb-2 text-xl font-semibold text-slate-900 first:mt-0">{children}</h2>,
           h3: ({ children }) => <h3 className="mt-6 text-base font-semibold text-slate-900 first:mt-0">{children}</h3>,
-          p: ({ children }) => <p className="my-3 leading-7">{children}</p>,
+          p: ({ children }) => <p className="my-3 whitespace-pre-wrap leading-7">{children}</p>,
           ul: ({ children }) => <ul className="my-3 list-disc space-y-2 pl-6 marker:text-blue-400">{children}</ul>,
           ol: ({ children }) => <ol className="my-3 list-decimal space-y-2 pl-6 marker:text-blue-500">{children}</ol>,
-          li: ({ children }) => <li className="pl-1 leading-7">{children}</li>,
+          li: ({ children }) => <li className="whitespace-pre-wrap pl-1 leading-7">{children}</li>,
           strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
           blockquote: ({ children }) => <blockquote className="my-4 rounded-r-lg border-l-3 border-blue-300 bg-blue-50/60 px-4 py-2 text-slate-600">{children}</blockquote>,
           code: ({ children, className }) => className ? (
