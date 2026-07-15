@@ -169,12 +169,12 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             {error && !document && <p className="m-8 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
               <div className="relative mx-auto h-full min-h-0 w-full max-w-[1200px]">
-                <article className="mx-auto flex h-full min-h-0 w-full max-w-[820px] flex-col">
+                <article className="mx-auto flex h-full min-h-0 w-full max-w-[900px] flex-col">
                   <div className="shrink-0 px-5 pb-3 pt-10 sm:px-10">
-                    <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0" />
+                    <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0 md:text-4xl" />
                     <div className="relative mt-4"><Tag className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Add tags" className="h-8 border-0 bg-slate-50 pl-8 shadow-none hover:bg-slate-100 focus-visible:ring-1" /></div>
                   </div>
-                  <MarkdownEditor value={content} onChange={setContent} className="min-h-0 flex-1 border-t border-slate-100" />
+                  <MarkdownEditor value={content} onChange={setContent} className="min-h-0 flex-1" />
                 </article>
                 <div className="pointer-events-none absolute inset-y-5 right-0 z-10 flex min-h-0 items-start">
                   <AIWritingAssistant title={title} content={content} documentId={Number(documentId)} onApplyTitle={setTitle} />

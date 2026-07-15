@@ -57,21 +57,33 @@ export function MarkdownEditor({ value, onChange, placeholder = "Start writingâ€
   };
 
   return (
-    <div className={cn("flex min-h-0 flex-col overflow-hidden", className)}>
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/70 bg-slate-50/55 px-2 py-1.5">
-        <div className="flex items-center gap-0.5">
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("heading")} title="Heading"><Heading2 className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("bold")} title="Bold"><Bold className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("list")} title="Bulleted list"><List className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("quote")} title="Quote"><Quote className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("code")} title="Inline code"><Code2 className="h-4 w-4" /></Button>
+    <div className={cn("flex min-h-0 flex-col overflow-hidden bg-white", className)}>
+      <div className="shrink-0 px-5 pb-2 pt-2.5 sm:px-10">
+        <div
+          className="flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-xl border border-slate-200/80 bg-white/90 p-1 shadow-[0_8px_28px_rgba(15,23,42,.07)] backdrop-blur"
+          role="toolbar"
+          aria-label="Text formatting"
+        >
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("heading")} title="Heading" aria-label="Heading" className="rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-950"><Heading2 className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("bold")} title="Bold" aria-label="Bold" className="rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-950"><Bold className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("list")} title="Bulleted list" aria-label="Bulleted list" className="rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-950"><List className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("quote")} title="Quote" aria-label="Quote" className="rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-950"><Quote className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => applyFormat("code")} title="Inline code" aria-label="Inline code" className="rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-950"><Code2 className="h-4 w-4" /></Button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-slate-200" aria-hidden="true" />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setPreview((current) => !current)}
+            aria-pressed={preview}
+            className={cn("h-8 shrink-0 rounded-lg px-2.5 text-xs", preview ? "bg-blue-50 text-blue-700 hover:bg-blue-100" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800")}
+          >
+            {preview ? <><Pencil className="mr-1.5 h-3.5 w-3.5" />Continue writing</> : <><Eye className="mr-1.5 h-3.5 w-3.5" />Preview</>}
+          </Button>
         </div>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setPreview((current) => !current)} className="h-8 text-xs text-slate-500">
-          {preview ? <><Pencil className="mr-1.5 h-3.5 w-3.5" />Write</> : <><Eye className="mr-1.5 h-3.5 w-3.5" />Preview</>}
-        </Button>
       </div>
       {preview ? (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-16 pt-5 [scrollbar-gutter:stable] sm:px-10">
           <MarkdownContent>{value || "Nothing to preview yet."}</MarkdownContent>
         </div>
       ) : (
@@ -81,7 +93,8 @@ export function MarkdownEditor({ value, onChange, placeholder = "Start writingâ€
           placeholder={placeholder}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="min-h-0 w-full flex-1 resize-none overflow-y-auto overscroll-contain bg-transparent px-5 py-5 text-[15px] leading-7 text-slate-800 outline-none placeholder:text-slate-400"
+          spellCheck
+          className="min-h-0 w-full flex-1 resize-none overflow-y-auto overscroll-contain bg-transparent px-5 pb-24 pt-4 text-[16px] leading-[1.9] text-slate-800 caret-blue-600 outline-none [scrollbar-gutter:stable] placeholder:text-slate-300 selection:bg-blue-100 sm:px-10"
         />
       )}
     </div>

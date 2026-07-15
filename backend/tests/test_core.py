@@ -106,6 +106,86 @@ def test_notion_nested_pagination_is_complete_and_strict():
         asyncio.run(NotionSyncService()._fetch_blocks_recursive(broken, "page"))
 
 
+def test_notion_writeback_discovers_real_title_property_and_optional_fields(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from services.note_service import NoteService
+    from config import settings
+
+    monkeypatch.setattr(settings, "notion_database_id", "database-1")
+
+    class Databases:
+        calls = 0
+
+        async def retrieve(self, database_id):
+            assert database_id == "database-1"
+            self.calls += 1
+            return {"properties": {
+                "标题": {"type": "title"},
+                "标签": {"type": "multi_select"},
+                "分类": {"type": "select"},
+            }}
+
+    databases = Databases()
+    service = NoteService()
+    notion = SimpleNamespace(databases=databases)
+    first = asyncio.run(service._get_notion_database_schema(notion))
+    second = asyncio.run(service._get_notion_database_schema(notion))
+
+    assert first == {"title": "标题", "tags": "标签", "category": "分类"}
+    assert second == first
+    assert databases.calls == 1
+
+    document = SimpleNamespace(
+        title="网站创建的笔记",
+        metadata_={"tags": "研究, 市场", "category": "工作"},
+    )
+    properties = service._notion_page_properties(document, first)
+    assert properties["标题"]["title"][0]["text"]["content"] == "网站创建的笔记"
+    assert properties["标签"]["multi_select"] == [{"name": "研究"}, {"name": "市场"}]
+    assert properties["分类"]["select"] == {"name": "工作"}
+
+
+def test_notion_writeback_replaces_old_blocks_and_writes_every_batch():
+    import asyncio
+    from types import SimpleNamespace
+    from services.note_service import NoteService
+
+    class Children:
+        def __init__(self):
+            self.appended = []
+
+        async def list(self, block_id, start_cursor=None, page_size=100):
+            assert block_id == "page-1"
+            assert page_size == 100
+            if start_cursor is None:
+                return {"results": [{"id": "old-1"}], "has_more": True, "next_cursor": "next"}
+            return {"results": [{"id": "old-2"}], "has_more": False, "next_cursor": None}
+
+        async def append(self, block_id, children):
+            assert block_id == "page-1"
+            self.appended.append(children)
+            return {"results": []}
+
+    class Blocks:
+        def __init__(self):
+            self.children = Children()
+            self.deleted = []
+
+        async def delete(self, block_id):
+            self.deleted.append(block_id)
+            return {"id": block_id, "archived": True}
+
+    blocks = Blocks()
+    notion = SimpleNamespace(blocks=blocks)
+    content_blocks = NoteService._content_to_notion_blocks("x" * (1900 * 205))
+    asyncio.run(NoteService()._replace_notion_page_content(notion, "page-1", content_blocks))
+
+    assert blocks.deleted == ["old-1", "old-2"]
+    assert [len(batch) for batch in blocks.children.appended] == [100, 100, 5]
+    assert sum(len(batch) for batch in blocks.children.appended) == len(content_blocks)
+
+
 def test_legacy_document_listing_collapses_duplicates_and_rebuilds_chunks(monkeypatch):
     from routers import documents as documents_router
 

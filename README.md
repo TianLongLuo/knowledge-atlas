@@ -2,6 +2,8 @@
 
 A private knowledge-management app for a Linux server: Notion incremental sync, PostgreSQL document storage, Chroma HNSW vector retrieval, DeepSeek-powered RAG answers, and a readable 2D knowledge map.
 
+For production rollout, Notion permissions, end-to-end checks, troubleshooting, and rollback, follow [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md).
+
 ## Current Logic
 
 - Documents are stored in PostgreSQL and split into chunks for search and citation.

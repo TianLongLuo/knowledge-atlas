@@ -145,7 +145,11 @@ export function deleteDocument(id: string) {
   return apiFetch<{ message: string; id: number }>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 export function createNote(data: { title: string; content: string; source?: string; tags?: string; category?: string }) {
-  return apiFetch<{ id: string; title: string }>("/notes", { method: "POST", body: JSON.stringify(data) });
+  return apiFetch<{
+    id: string;
+    title: string;
+    notion_sync?: { status: "completed" | "failed" | "not_configured"; notion_page_id?: string; error?: string } | null;
+  }>("/notes", { method: "POST", body: JSON.stringify(data) });
 }
 
 export interface SearchResultItem {

@@ -10,7 +10,7 @@ export interface AutosaveDraft {
   category?: string;
 }
 
-export type AutosaveState = "idle" | "local" | "saving" | "saved" | "error";
+export type AutosaveState = "idle" | "local" | "saving" | "saved" | "warning" | "error";
 
 interface Options {
   id: string | null;
@@ -111,12 +111,18 @@ export function useDocumentAutosave({ id, enabled, draft, initialDraft, storageK
     setState("saving");
     setMessage("");
     try {
-      await updateDocument(idRef.current, snapshot);
+      const response = await updateDocument(idRef.current, snapshot);
       savedSignatureRef.current = snapshotSignature;
       onSavedRef.current?.(snapshot);
       if (signature(latestRef.current) === snapshotSignature) {
         clearStoredDraft(storageKey);
-        setState("saved");
+        if (response.metadata?.notion_sync_status === "failed") {
+          setState("warning");
+          setMessage("Saved in Atlas · Notion will retry automatically");
+        } else {
+          setState("saved");
+          setMessage("");
+        }
       } else {
         queuedRef.current = true;
       }

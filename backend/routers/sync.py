@@ -17,6 +17,23 @@ from schemas import SyncStartResponse, SyncStatusResponse
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
+@router.post("/notion/writeback/{document_id}")
+async def retry_notion_writeback(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    """Retry one local document's write-back to Notion."""
+    if not settings.notion_api_key or not settings.notion_database_id:
+        raise HTTPException(status_code=400, detail="Notion write-back is not configured")
+    from services.note_service import note_service
+
+    try:
+        return await note_service.sync_document_to_notion(db, document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/notion/start", response_model=SyncStartResponse)
 async def start_notion_sync(
     background_tasks: BackgroundTasks,

@@ -77,6 +77,14 @@ async def _run_automatic_notion_sync() -> None:
                     )
                 )
                 if running.scalar_one_or_none() is None:
+                    from services.note_service import note_service
+
+                    retries = await note_service.retry_failed_notion_writebacks(session)
+                    if retries["attempted"]:
+                        logger.info(
+                            "Retried %d Notion write-backs: %d completed, %d still failed",
+                            retries["attempted"], retries["completed"], retries["failed"],
+                        )
                     result = await session.execute(
                         select(SyncState).where(
                             SyncState.source_type == "notion",

@@ -181,15 +181,15 @@ export default function DocumentDetailPage() {
 
       {editing ? (
         <div className="relative mx-auto min-h-0 w-full max-w-[1200px] flex-1 overflow-hidden px-4 sm:px-7">
-          <article className="mx-auto flex h-full min-h-0 w-full max-w-[820px] flex-col">
+          <article className="mx-auto flex h-full min-h-0 w-full max-w-[900px] flex-col">
             <div className="shrink-0 px-5 pb-3 pt-10 sm:px-10">
-              <Input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0" />
+              <Input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} placeholder="Untitled" className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none focus-visible:ring-0 md:text-4xl" />
               <div className="mt-4 flex items-center gap-2">
                 <div className="relative min-w-0 flex-1"><Tag className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="Add tags" className="h-8 border-0 bg-slate-50 pl-8 shadow-none hover:bg-slate-100 focus-visible:ring-1" /></div>
                 <span className="text-xs tabular-nums text-slate-400">{editContent.length.toLocaleString()} characters</span>
               </div>
             </div>
-            <MarkdownEditor value={editContent} onChange={setEditContent} placeholder="Start writing…" className="min-h-0 flex-1 border-t border-slate-100" />
+            <MarkdownEditor value={editContent} onChange={setEditContent} placeholder="Start writing…" className="min-h-0 flex-1" />
           </article>
           <div className="pointer-events-none absolute inset-y-5 right-0 z-10 flex min-h-0 items-start">
             <AIWritingAssistant title={editTitle} content={editContent} documentId={Number(id)} onApplyTitle={setEditTitle} />

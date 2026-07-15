@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Cloud, CloudOff, Loader2 } from "lucide-react";
+import { Check, Cloud, CloudOff, Loader2, TriangleAlert } from "lucide-react";
 import type { AutosaveState } from "@/lib/use-document-autosave";
 
 export function AutosaveStatus({ state, message }: { state: AutosaveState; message?: string }) {
@@ -9,6 +9,7 @@ export function AutosaveStatus({ state, message }: { state: AutosaveState; messa
     local: { icon: Cloud, label: message || "Draft saved locally", className: "text-amber-600" },
     saving: { icon: Loader2, label: "Saving…", className: "text-blue-600" },
     saved: { icon: Check, label: "Saved", className: "text-emerald-600" },
+    warning: { icon: TriangleAlert, label: message || "Saved · Notion sync pending", className: "text-amber-600" },
     error: { icon: CloudOff, label: message || "Saved locally · retrying", className: "text-red-600" },
   }[state];
   const Icon = content.icon;

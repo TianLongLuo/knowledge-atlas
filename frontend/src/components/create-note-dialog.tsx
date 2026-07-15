@@ -58,7 +58,13 @@ export function CreateNoteDialog({ onCreated }: Props) {
       setDocumentId(nextId);
       setCreatedBaseline(snapshot);
       writeStoredDraft(NEW_NOTE_DRAFT_KEY, snapshot, nextId);
-      setCreateState("saved");
+      if (created.notion_sync?.status === "failed") {
+        setCreateState("warning");
+        setCreateMessage("Saved in Atlas · Notion will retry automatically");
+      } else {
+        setCreateState("saved");
+        setCreateMessage("");
+      }
       router.refresh();
       onCreated?.();
       window.dispatchEvent(new CustomEvent("atlas:note-created", { detail: { id: nextId } }));
@@ -94,7 +100,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
   }, [content, documentId, draft, ensureCreated, open, title]);
 
   useEffect(() => {
-    if (open || !documentId || createState !== "saved") return;
+    if (open || !documentId || !["saved", "warning"].includes(createState)) return;
     clearStoredDraft(NEW_NOTE_DRAFT_KEY);
     setTitle("");
     setContent("");
@@ -125,7 +131,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
     if (documentId) void autosave.saveNow();
     else if (title.trim() && content.trim()) void ensureCreated();
     setOpen(false);
-    if (documentId && autosave.state === "saved") {
+    if (documentId && ["saved", "warning"].includes(autosave.state)) {
       clearStoredDraft(NEW_NOTE_DRAFT_KEY);
       setTitle("");
       setContent("");
@@ -172,13 +178,13 @@ export function CreateNoteDialog({ onCreated }: Props) {
         </header>
         <div className="min-h-0 flex-1 overflow-hidden px-4 sm:px-7">
           <div className="relative mx-auto h-full min-h-0 w-full max-w-[1200px]">
-            <article className="mx-auto flex h-full min-h-0 w-full max-w-[820px] flex-col">
+            <article className="mx-auto flex h-full min-h-0 w-full max-w-[900px] flex-col">
               <div className="shrink-0 px-5 pb-3 pt-10 sm:px-10">
                 <Input
                   placeholder="Untitled"
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
-                  className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none placeholder:text-slate-300 focus-visible:ring-0"
+                  className="h-auto rounded-none border-0 bg-transparent px-0 py-1 font-heading text-4xl font-semibold tracking-tight text-slate-900 shadow-none placeholder:text-slate-300 focus-visible:ring-0 md:text-4xl"
                 />
                 <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-500">
                   <Select value={category} onValueChange={(value) => setCategory(value || "")}>
@@ -192,7 +198,7 @@ export function CreateNoteDialog({ onCreated }: Props) {
                   <span className="ml-auto text-xs tabular-nums text-slate-400">{content.length.toLocaleString()} characters</span>
                 </div>
               </div>
-              <MarkdownEditor value={content} onChange={setContent} className="min-h-0 flex-1 border-t border-slate-100" ariaLabel="Note content" />
+              <MarkdownEditor value={content} onChange={setContent} className="min-h-0 flex-1" ariaLabel="Note content" />
             </article>
             <div className="pointer-events-none absolute inset-y-5 right-0 z-10 flex min-h-0 items-start">
               <AIWritingAssistant title={title} content={content} onApplyTitle={setTitle} />

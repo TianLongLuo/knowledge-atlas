@@ -37,6 +37,7 @@ class NoteResponse(BaseModel):
     source: str
     created_at: str
     chunk_count: int = 0
+    notion_sync: dict | None = None
 
 
 async def _broadcast_event(event_type: str, data: dict) -> None:
@@ -121,6 +122,7 @@ async def create_note(
         source=result["source"],
         created_at=result["created_at"],
         chunk_count=result["chunk_count"],
+        notion_sync=result.get("notion_sync"),
     )
 
 
