@@ -60,7 +60,7 @@ async def _run_corpus_analysis() -> None:
 
 async def _run_automatic_notion_sync() -> None:
     """Run Notion sync on a safe interval without requiring a UI click. Broadcasts SSE events."""
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from database import async_session_factory
     from models import SyncState
@@ -70,6 +70,9 @@ async def _run_automatic_notion_sync() -> None:
     while True:
         try:
             async with async_session_factory() as session:
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('notion-full-sync'))")
+                )
                 running = await session.execute(
                     select(SyncState).where(
                         SyncState.source_type == "notion",
@@ -168,6 +171,8 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await sync_task
 
+    from services.note_service import note_service
+    await note_service.cancel_pending_writebacks()
     await engine.dispose()
     logger.info("Knowledge Atlas backend shut down")
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -55,6 +55,7 @@ async def start_notion_sync(
             detail="NOTION_DATABASE_ID is not configured. Set it in .env",
         )
 
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('notion-full-sync'))"))
     # Check if a sync is already running
     existing = await db.execute(
         select(SyncState).where(

@@ -148,7 +148,7 @@ export function createNote(data: { title: string; content: string; source?: stri
   return apiFetch<{
     id: string;
     title: string;
-    notion_sync?: { status: "completed" | "failed" | "not_configured"; notion_page_id?: string; error?: string } | null;
+    notion_sync?: { status: "pending" | "completed" | "failed" | "not_configured"; notion_page_id?: string; error?: string } | null;
   }>("/notes", { method: "POST", body: JSON.stringify(data) });
 }
 
@@ -220,9 +220,11 @@ export async function askAgent(data: AgentRequest): Promise<AgentResponse> {
 
 export interface WritingIssue { excerpt: string; issue: string; suggestion: string }
 export interface WritingReference { document_id: number; title: string; connection: string; relevance: number }
+export interface WritingFlowStep { label: string; summary: string; relation: string; strength: "clear" | "weak" | "missing" }
 export interface WritingAssistResponse {
   suggested_titles: string[];
   directions: string[];
+  logic_flow: WritingFlowStep[];
   logic_issues: WritingIssue[];
   grammar_issues: WritingIssue[];
   historical_references: WritingReference[];
@@ -244,7 +246,7 @@ interface RawSyncState { source_type: string; source_id: string; status: string;
 export interface SyncStatus { status: string; last_sync_time: string | null; sync_in_progress: boolean; total_synced: number; errors: number }
 export interface SyncHistoryItem { id: string; started_at: string; completed_at: string | null; status: string; documents_processed: number; errors: number }
 export async function getSyncStatus(): Promise<SyncStatus> {
-  const states = await apiFetch<RawSyncState[]>("/sync/status");
+  const states = await apiFetch<RawSyncState[]>("/sync/status?source_type=notion");
   const latest = states[0];
   return {
     status: latest?.status === "running" ? "syncing" : latest?.status === "failed" ? "error" : "idle",
@@ -255,7 +257,7 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   };
 }
 export async function getSyncHistory(): Promise<SyncHistoryItem[]> {
-  const states = await apiFetch<RawSyncState[]>("/sync/status");
+  const states = await apiFetch<RawSyncState[]>("/sync/status?source_type=notion");
   return states.map((state, index) => ({
     id: `${state.source_id}-${index}`,
     started_at: state.last_synced_at || new Date(0).toISOString(),

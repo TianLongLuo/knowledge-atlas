@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, TypeVar
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -31,6 +31,9 @@ class NoteService:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._notion_schema_cache: dict[str, dict[str, str | None]] = {}
+        self._writeback_tasks: dict[int, asyncio.Task] = {}
+        self._writeback_versions: dict[int, int] = {}
+        self._writeback_locks: dict[int, asyncio.Lock] = {}
 
     # ── Create ──────────────────────────────────────────────────────
 
@@ -204,9 +207,30 @@ class NoteService:
                     new_content.encode("utf-8")
                 ).hexdigest()[:32]
                 doc.content_hash = content_hash
-                await self._reindex_chunks(session, doc, new_content)
+                try:
+                    async with session.begin_nested():
+                        await self._reindex_chunks(session, doc, new_content)
+                    metadata = dict(doc.metadata_ or {})
+                    metadata["vector_sync_status"] = "completed"
+                    metadata.pop("vector_sync_error", None)
+                    doc.metadata_ = metadata
+                except Exception as exc:
+                    # PostgreSQL is canonical. A vector-store outage must never
+                    # make the writing surface lose a local draft.
+                    logger.exception("Vector reindex failed for document %s", doc.id)
+                    metadata = dict(doc.metadata_ or {})
+                    metadata["vector_sync_status"] = "failed"
+                    metadata["vector_sync_error"] = str(exc)[:1000]
+                    doc.metadata_ = metadata
             elif tags is not None or category is not None or title is not None:
-                await self._refresh_chroma_metadata(doc)
+                try:
+                    await self._refresh_chroma_metadata(doc)
+                except Exception as exc:
+                    logger.exception("Vector metadata refresh failed for document %s", doc.id)
+                    metadata = dict(doc.metadata_ or {})
+                    metadata["vector_sync_status"] = "failed"
+                    metadata["vector_sync_error"] = str(exc)[:1000]
+                    doc.metadata_ = metadata
 
             doc.updated_at = datetime.now(timezone.utc)
             await session.flush()
@@ -353,6 +377,14 @@ class NoteService:
     async def _push_to_notion(
         self, db: AsyncSession, doc: Document
     ) -> dict[str, Any] | None:
+        """Serialize writes for one note so autosave cannot duplicate Notion work."""
+        lock = self._writeback_locks.setdefault(doc.id, asyncio.Lock())
+        async with lock:
+            return await self._push_to_notion_unlocked(db, doc)
+
+    async def _push_to_notion_unlocked(
+        self, db: AsyncSession, doc: Document
+    ) -> dict[str, Any] | None:
         """Create or replace the linked Notion page without silent truncation.
 
         PostgreSQL remains canonical. A Notion failure never rolls back the local
@@ -362,8 +394,14 @@ class NoteService:
         if not settings.notion_api_key or not settings.notion_database_id:
             return {"status": "not_configured"}
 
-        state = await self._set_notion_sync_state(db, doc, "running")
+        state: SyncState | None = None
+        notion_page_id: str | None = self._linked_notion_page_id(doc)
+        created_new_page = False
         try:
+            state = await self._set_notion_sync_state(db, doc, "running")
+            # Release the advisory/sync-state row locks before remote network
+            # calls so another web worker can continue saving the note.
+            await db.commit()
             from notion_client import AsyncClient
 
             notion = AsyncClient(auth=settings.notion_api_key)
@@ -371,8 +409,6 @@ class NoteService:
             text_blocks = self._content_to_notion_blocks(content)
             schema = await self._get_notion_database_schema(notion)
             properties = self._notion_page_properties(doc, schema)
-            notion_page_id = self._linked_notion_page_id(doc)
-
             if notion_page_id:
                 page = await self._notion_call(
                     "update page properties",
@@ -398,24 +434,18 @@ class NoteService:
                     ),
                 )
                 notion_page_id = str(page["id"])
-                # Website-created notes become linked Notion records so the next
-                # retry/import updates the same canonical document. Persist the
-                # link before uploading later batches so a partial long-note
-                # failure cannot create a duplicate page on retry.
-                doc.source_type = "notion"
-                doc.source_id = notion_page_id
-                linked_metadata = dict(doc.metadata_ or {})
-                linked_metadata.update({
-                    "notion_page_id": notion_page_id,
-                    "notion_url": page.get("url", ""),
-                })
-                doc.metadata_ = linked_metadata
-                await db.flush()
+                created_new_page = True
                 await self._append_notion_blocks(notion, notion_page_id, remaining)
                 logger.info(
                     "Created Notion page %s for document %s", notion_page_id, doc.id
                 )
 
+            # Reload after network I/O so status fields never overwrite title,
+            # body, or tags saved by a newer autosave transaction.
+            await db.refresh(doc)
+            if created_new_page:
+                doc.source_type = "notion"
+                doc.source_id = notion_page_id
             metadata = dict(doc.metadata_ or {})
             metadata.update({
                 "notion_page_id": notion_page_id,
@@ -425,40 +455,58 @@ class NoteService:
             })
             metadata.pop("notion_sync_error", None)
             doc.metadata_ = metadata
-            state.status = "completed"
-            state.error_message = None
-            state.last_synced_at = datetime.now(timezone.utc)
+            if state is not None:
+                state.status = "completed"
+                state.error_message = None
+                state.last_synced_at = datetime.now(timezone.utc)
             await db.flush()
-            try:
-                await self._refresh_chroma_metadata(doc)
-            except Exception:
-                logger.exception(
-                    "Notion sync completed but Chroma metadata refresh failed for doc %s",
-                    doc.id,
-                )
             return {"status": "completed", "notion_page_id": notion_page_id}
         except Exception as exc:
             message = self._safe_notion_error(exc)
             logger.exception("Failed to push doc %s to Notion", doc.id)
+            # If page creation succeeded before a later block upload failed,
+            # retain the page link so the retry updates instead of duplicating it.
+            if notion_page_id and created_new_page:
+                try:
+                    await db.refresh(doc)
+                    doc.source_type = "notion"
+                    doc.source_id = notion_page_id
+                except Exception:
+                    logger.exception("Unable to retain partial Notion page link for doc %s", doc.id)
             metadata = dict(doc.metadata_ or {})
+            if notion_page_id:
+                metadata["notion_page_id"] = notion_page_id
             metadata["notion_sync_status"] = "failed"
             metadata["notion_sync_error"] = message
             doc.metadata_ = metadata
-            state.status = "failed"
-            state.error_message = message
+            if state is not None:
+                state.status = "failed"
+                state.error_message = message
             await db.flush()
             return {"status": "failed", "error": message}
 
     async def _set_notion_sync_state(
         self, db: AsyncSession, doc: Document, status: str
     ) -> SyncState:
+        # One transaction-level lock prevents concurrent autosaves from both
+        # creating the same sync-state row. It also lets us repair historical
+        # duplicate rows left by deployments that predated the unique index.
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"notion-writeback:{doc.id}"},
+        )
         result = await db.execute(
-            select(SyncState).where(
+            select(SyncState)
+            .where(
                 SyncState.source_type == "notion_writeback",
                 SyncState.source_id == str(doc.id),
             )
+            .order_by(SyncState.id.desc())
         )
-        state = result.scalar_one_or_none()
+        states = result.scalars().all()
+        state = states[0] if states else None
+        for duplicate in states[1:]:
+            await db.delete(duplicate)
         if state is None:
             state = SyncState(
                 source_type="notion_writeback",
@@ -467,10 +515,11 @@ class NoteService:
             db.add(state)
         state.status = status
         state.error_message = None
-        metadata = dict(doc.metadata_ or {})
-        metadata["notion_sync_status"] = status
-        metadata.pop("notion_sync_error", None)
-        doc.metadata_ = metadata
+        if status == "pending":
+            metadata = dict(doc.metadata_ or {})
+            metadata["notion_sync_status"] = status
+            metadata.pop("notion_sync_error", None)
+            doc.metadata_ = metadata
         await db.flush()
         return state
 
@@ -645,11 +694,73 @@ class NoteService:
     async def _enqueue_notion_write(
         self, db: AsyncSession, doc: Document
     ) -> dict[str, Any] | None:
-        """Push document to Notion and record sync state.
+        """Durably queue one debounced Notion write without blocking autosave."""
+        if not settings.notion_api_key or not settings.notion_database_id:
+            return {"status": "not_configured"}
+        active_task = self._writeback_tasks.get(doc.id)
+        active_lock = self._writeback_locks.get(doc.id)
+        write_in_progress = bool(
+            (active_task and not active_task.done())
+            or (active_lock and active_lock.locked())
+        )
+        if not write_in_progress:
+            try:
+                await self._set_notion_sync_state(db, doc, "pending")
+            except Exception:
+                # The Atlas save remains authoritative even if sync bookkeeping
+                # is temporarily unhealthy. The worker can recover later.
+                logger.exception("Unable to mark Notion write pending for document %s", doc.id)
+        else:
+            metadata = dict(doc.metadata_ or {})
+            metadata["notion_sync_status"] = "pending"
+            doc.metadata_ = metadata
+        self._schedule_notion_write(doc.id)
+        return {"status": "pending"}
 
-        Returns sync state dict or None if Notion is not configured.
-        """
-        return await self._push_to_notion(db, doc)
+    def _schedule_notion_write(self, document_id: int) -> None:
+        self._writeback_versions[document_id] = self._writeback_versions.get(document_id, 0) + 1
+        existing = self._writeback_tasks.get(document_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._run_debounced_notion_write(document_id))
+        self._writeback_tasks[document_id] = task
+
+        def finish(completed: asyncio.Task) -> None:
+            if self._writeback_tasks.get(document_id) is completed:
+                self._writeback_tasks.pop(document_id, None)
+                self._writeback_versions.pop(document_id, None)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Debounced Notion write failed for document %s", document_id)
+
+        task.add_done_callback(finish)
+
+    async def _run_debounced_notion_write(self, document_id: int) -> None:
+        while True:
+            version = self._writeback_versions.get(document_id, 0)
+            await asyncio.sleep(settings.notion_writeback_debounce_seconds)
+            if version != self._writeback_versions.get(document_id, 0):
+                continue
+            async with async_session_factory() as db:
+                doc = await db.get(Document, document_id)
+                if doc is None:
+                    return
+                await self._push_to_notion(db, doc)
+                await db.commit()
+            if version == self._writeback_versions.get(document_id, 0):
+                return
+
+    async def cancel_pending_writebacks(self) -> None:
+        tasks = [task for task in self._writeback_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._writeback_tasks.clear()
+        self._writeback_versions.clear()
 
     async def retry_failed_notion_writebacks(
         self, db: AsyncSession, limit: int = 20
@@ -659,7 +770,7 @@ class NoteService:
             select(SyncState)
             .where(
                 SyncState.source_type == "notion_writeback",
-                SyncState.status == "failed",
+                SyncState.status.in_(("pending", "failed")),
             )
             .order_by(SyncState.updated_at.asc())
             .limit(limit)

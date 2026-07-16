@@ -12,7 +12,13 @@ from config import settings
 from database import get_chroma_collection
 from models import Document
 from schemas import SearchResult
-from utils import dominant_group, legacy_document_key, normalized_tags, pseudo_id
+from utils import (
+    canonical_document_key,
+    dominant_group,
+    legacy_document_key,
+    normalized_tags,
+    pseudo_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +100,18 @@ class SearchService:
                     results.append(r)
 
         results.sort(key=lambda r: r.similarity_score, reverse=True)
-        return results[:top_k]
+        deduplicated: list[SearchResult] = []
+        seen_content: set[str] = set()
+        for result in results:
+            key = canonical_document_key(result.title, result.snippet)
+            if key and key in seen_content:
+                continue
+            if key:
+                seen_content.add(key)
+            deduplicated.append(result)
+            if len(deduplicated) >= top_k:
+                break
+        return deduplicated
 
     async def _keyword_search(
         self, query: str, source_type: str | None, date_from: str | None,
@@ -115,9 +132,13 @@ class SearchService:
 
         query_lower = query.casefold().strip()
         docs: list[Document] = []
+        seen_content: set[str] = set()
         for doc in candidates:
             metadata = doc.metadata_ or {}
             content = doc.normalized_content or doc.raw_content or ""
+            canonical_key = canonical_document_key(doc.title, content)
+            if canonical_key is None or canonical_key in seen_content:
+                continue
             searchable = "\n".join([
                 doc.title,
                 content,
@@ -126,6 +147,7 @@ class SearchService:
             ]).casefold()
             if query_lower in searchable:
                 docs.append(doc)
+                seen_content.add(canonical_key)
             if len(docs) >= limit:
                 break
 
@@ -180,11 +202,14 @@ class SearchService:
             matches.sort(key=lambda x: x[0], reverse=True)
             results = []
             seen_documents: set[int] = set()
+            seen_content: set[str] = set()
             for score, doc, text, meta, title, doc_source in matches:
                 logical_id = pseudo_id(legacy_document_key(doc["id"], meta, text))
-                if logical_id in seen_documents:
+                canonical_key = canonical_document_key(title, text)
+                if logical_id in seen_documents or canonical_key is None or canonical_key in seen_content:
                     continue
                 seen_documents.add(logical_id)
+                seen_content.add(canonical_key)
                 snippet = self._extract_snippet(text, query)
                 results.append(SearchResult(
                     title=title or "Untitled",
@@ -227,6 +252,7 @@ class SearchService:
 
             search_results = []
             seen_documents: set[int] = set()
+            seen_content: set[str] = set()
             if results["ids"] and results["ids"][0]:
                 for i, chroma_id in enumerate(results["ids"][0]):
                     metadata = (results["metadatas"][0] or [{}])[i] if results["metadatas"][0] else {}
@@ -257,9 +283,14 @@ class SearchService:
                         doc_id = pseudo_id(legacy_document_key(chroma_id, metadata, document))
                     if document_id is not None and doc_id != document_id:
                         continue
-                    if doc_id in seen_documents:
+                    canonical_key = canonical_document_key(
+                        str(metadata.get("title") or "Untitled"),
+                        document,
+                    )
+                    if doc_id in seen_documents or canonical_key is None or canonical_key in seen_content:
                         continue
                     seen_documents.add(doc_id)
+                    seen_content.add(canonical_key)
                     search_results.append(SearchResult(
                         title=metadata.get("title", "Untitled"),
                         snippet=document[:500] if document else "",

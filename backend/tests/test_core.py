@@ -53,6 +53,15 @@ def test_legacy_duplicate_rows_share_one_logical_identity():
     assert content_fingerprint(" 标题 ", "a  b", "flomo") == content_fingerprint("标题", "a b", "FLOMO")
 
 
+def test_canonical_document_key_deduplicates_across_storage_sources():
+    from utils import canonical_document_key
+
+    assert canonical_document_key("同一篇笔记", "第一段\n\n第二段") == canonical_document_key(
+        " 同一篇笔记 ", "第一段  第二段"
+    )
+    assert canonical_document_key("Untitled", "") is None
+
+
 def test_chunk_families_and_overlap_reconstruct_complete_note():
     meta = {"source": "notion", "title": "Long note", "chunk_index": 0}
     assert legacy_document_key("note_chunk_0", meta, "first") == legacy_document_key("note_chunk_1", meta, "second")
@@ -441,6 +450,8 @@ def test_dashboard_and_document_list_share_postgres_deduplication():
         Document(source_type="flomo", source_id="note-1", title="Newer", raw_content="same"),
         Document(source_type="manual", title="Standalone", raw_content="unique"),
         Document(source_type="manual", title="Standalone", raw_content="unique"),
+        Document(source_type="notion", source_id="page-2", title="Standalone", raw_content="unique"),
+        Document(source_type="notion", source_id="blank", title="Untitled", raw_content=""),
     ]
 
     unique = _deduplicate_postgres_documents(documents)
@@ -563,7 +574,7 @@ def test_writing_assist_limits_external_draft_and_history(monkeypatch):
 
         async def create(self, **kwargs):
             captured.update(kwargs)
-            message = SimpleNamespace(content='{"suggested_titles":["Better title"],"directions":[],"logic_issues":[],"grammar_issues":[]}')
+            message = SimpleNamespace(content='{"suggested_titles":["Better title"],"directions":[],"logic_flow":[{"label":"Claim","summary":"The main claim","relation":"supported by","strength":"clear"}],"logic_issues":[],"grammar_issues":[]}')
             return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     monkeypatch.setattr(agent.SearchService, "search", fake_search)
@@ -583,3 +594,5 @@ def test_writing_assist_limits_external_draft_and_history(monkeypatch):
     assert outbound.count("Reference ") == 10  # title + label for five references
     assert len(response.historical_references) == 5
     assert response.suggested_titles == ["Better title"]
+    assert response.logic_flow[0].label == "Claim"
+    assert response.logic_flow[0].strength == "clear"

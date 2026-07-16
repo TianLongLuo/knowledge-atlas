@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpen, Check, Languages, Lightbulb, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowDown, BookOpen, Check, GitBranch, Languages, Lightbulb, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getWritingAssistance, WritingAssistResponse, WritingIssue } from "@/lib/api";
@@ -49,7 +49,10 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
       const next = await getWritingAssistance({ title: title.trim(), content: draft, document_id: documentId });
       if (version === requestVersion.current) setResult(next);
     } catch (cause) {
-      if (version === requestVersion.current) setError(cause instanceof Error ? cause.message : "Writing analysis failed.");
+      if (version === requestVersion.current) {
+        lastSignature.current = "";
+        setError(cause instanceof Error ? cause.message : "Writing analysis failed.");
+      }
     } finally {
       if (version === requestVersion.current) setLoading(false);
     }
@@ -57,7 +60,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
 
   useEffect(() => {
     if (content.trim().length < 80) return;
-    const timer = window.setTimeout(() => void analyze(), 1600);
+    const timer = window.setTimeout(() => void analyze(), 2800);
     return () => window.clearTimeout(timer);
   }, [analyze, content]);
 
@@ -74,7 +77,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
   }, []);
 
   const insightCount = result
-    ? result.suggested_titles.length + result.directions.length + result.logic_issues.length + result.grammar_issues.length
+    ? result.suggested_titles.length + result.directions.length + (result.logic_flow || []).length + result.logic_issues.length + result.grammar_issues.length
     : 0;
   const expanded = hovered || pinned;
 
@@ -87,7 +90,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
   const closeAfterLeave = () => {
     if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
     if (pinned) return;
-    leaveTimer.current = window.setTimeout(() => setHovered(false), 700);
+    leaveTimer.current = window.setTimeout(() => setHovered(false), 1500);
   };
 
   const keepOpen = () => {
@@ -123,6 +126,37 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-700"><Lightbulb className="h-3.5 w-3.5" />Directions</div>
           <ul className="space-y-2 text-xs leading-5 text-slate-700">{result.directions.map((item) => <li key={item} className="rounded-xl bg-white/70 p-3">{item}</li>)}</ul>
+        </section>
+        <section>
+          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-cyan-700"><GitBranch className="h-3.5 w-3.5" />Argument flow</div>
+          {(result.logic_flow || []).length ? (
+            <div className="space-y-1">
+              {(result.logic_flow || []).map((step, index) => {
+                const tone = step.strength === "missing"
+                  ? "border-red-200 bg-red-50/85 text-red-800"
+                  : step.strength === "weak"
+                    ? "border-amber-200 bg-amber-50/85 text-amber-900"
+                    : "border-cyan-100 bg-white/80 text-slate-800";
+                return (
+                  <div key={`${step.label}-${index}`}>
+                    <div className={`rounded-xl border p-3 ${tone}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold">{step.label}</p>
+                        {step.strength !== "clear" && <Badge variant="outline" className="bg-white/60 text-[9px] uppercase">{step.strength}</Badge>}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 opacity-85">{step.summary}</p>
+                    </div>
+                    {index < (result.logic_flow || []).length - 1 && (
+                      <div className="flex items-center gap-2 py-1 pl-4 text-[10px] text-slate-400">
+                        <ArrowDown className="h-3 w-3" />
+                        <span className="line-clamp-1">{step.relation || "leads to"}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : <p className="text-xs text-slate-500">Keep writing to reveal the article’s argument path.</p>}
         </section>
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700"><BookOpen className="h-3.5 w-3.5" />Historical references</div>

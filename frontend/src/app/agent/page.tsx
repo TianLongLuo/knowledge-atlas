@@ -6,7 +6,6 @@ import { askAgent, getMemoryInsights, reviewMemoryInsight } from "@/lib/api";
 import type { AgentResponse, AgentCitation, MemoryInsight } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Bot, User, Send, Loader2, Brain, Check, X, Sparkles, MessageCircleQuestion, Wifi, WifiOff, FileText, ChevronDown, Plus } from "lucide-react";
 import { MarkdownContent } from "@/components/markdown-content";
@@ -24,6 +23,12 @@ const EMPTY_STATE_PROMPTS = [
   { text: "What have I been working on recently?", icon: FileText },
   { text: "What tensions or changes appear in my notes?", icon: MessageCircleQuestion },
 ];
+
+const MODE_OPTIONS = [
+  { value: "knowledge", label: "Knowledge", icon: Bot, description: "Find facts and synthesize answers from your notes." },
+  { value: "reflection", label: "Reflection", icon: Sparkles, description: "Mirror patterns and tensions, separating evidence from inference." },
+  { value: "socratic", label: "Socratic", icon: MessageCircleQuestion, description: "Challenge an assumption with focused questions instead of deciding for you." },
+] as const;
 
 export default function AgentPage() {
   const searchParams = useSearchParams();
@@ -167,7 +172,7 @@ export default function AgentPage() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto min-h-[calc(100vh-4rem)] flex flex-col">
+    <div className="mx-auto flex h-[calc(100dvh-2rem)] min-h-0 max-w-3xl flex-col overflow-hidden md:h-[calc(100dvh-3rem)] lg:h-[calc(100dvh-4rem)]">
       {/* Minimal header */}
       <div className="flex items-center justify-between pb-3">
         <div className="flex items-center gap-2">
@@ -185,7 +190,7 @@ export default function AgentPage() {
           )}
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" title="Memory insights" onClick={() => setInsightOpen(true)} className="relative h-8 w-8">
+          <Button variant="ghost" size="icon" title="About you — review AI memory insights" onClick={() => setInsightOpen(true)} className="relative h-8 w-8">
             <Brain className="h-4 w-4" />
             {pendingCount > 0 && <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-blue-500" />}
           </Button>
@@ -196,8 +201,8 @@ export default function AgentPage() {
       </div>
 
       {/* Conversation surface — centered, full-height */}
-      <div className="flex-1 flex flex-col min-h-0">
-        <ScrollArea className="flex-1 pr-2" ref={scrollRef}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" ref={scrollRef}>
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-16">
               <Bot className="h-10 w-10 text-muted-foreground/20 mb-4" />
@@ -292,21 +297,17 @@ export default function AgentPage() {
               )}
             </div>
           )}
-        </ScrollArea>
+        </div>
 
-        {/* Composer with integrated mode selector */}
-        <div className="border-t pt-3 mt-3">
+        {/* Composer remains anchored while only the conversation scrolls. */}
+        <div className="z-10 mt-3 shrink-0 border-t bg-background/95 pb-1 pt-3 backdrop-blur">
           {/* Mode selector — compact pills */}
           <div className="flex items-center gap-1.5 mb-2">
-            {([
-              ["knowledge", "Knowledge", Bot],
-              ["reflection", "Reflection", Sparkles],
-              ["socratic", "Socratic", MessageCircleQuestion],
-            ] as const).map(([value, label, Icon]) => (
+            {MODE_OPTIONS.map(({ value, label, icon: Icon, description }) => (
               <button
                 key={value}
                 onClick={() => setMode(value)}
-                title={label}
+                title={description}
                 className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
                   mode === value
                     ? "border-blue-400/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
@@ -318,6 +319,9 @@ export default function AgentPage() {
               </button>
             ))}
           </div>
+          <p className="mb-2 text-[11px] leading-4 text-muted-foreground">
+            {MODE_OPTIONS.find((option) => option.value === mode)?.description}
+          </p>
 
           {/* Input row */}
           <div className="flex gap-2">
@@ -347,16 +351,16 @@ export default function AgentPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Brain className="h-4 w-4 text-blue-600" />
-              Memory insights
+              About you
             </DialogTitle>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto space-y-3">
             <p className="text-xs text-muted-foreground">
-              AI hypotheses never become trusted memory until you confirm them.
+              Atlas can notice durable goals, values, beliefs, and recurring tensions in your notes and conversations. These remain suggestions until you confirm them.
             </p>
             {insights.filter((item) => item.status === "pending").length === 0 && (
               <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-                No pending insights yet. Reflection conversations can create evidence-backed hypotheses for review.
+                No suggested memories to review yet. Any conversation or new note can produce an evidence-backed suggestion.
               </p>
             )}
             {insights.filter((item) => item.status === "pending").map((insight) => (
@@ -378,7 +382,7 @@ export default function AgentPage() {
               </div>
             ))}
             <div className="border-t pt-3">
-              <p className="text-xs font-medium">Confirmed memories</p>
+              <p className="text-xs font-medium">Trusted memories</p>
               <p className="mt-1 text-2xl font-semibold">{insights.filter((item) => item.status === "confirmed").length}</p>
               <p className="text-[11px] text-muted-foreground">Only these are included as long-term personal context.</p>
             </div>

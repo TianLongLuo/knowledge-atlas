@@ -19,6 +19,7 @@ from config import settings
 from database import async_session_factory, get_chroma_collection
 from models import Document, DocumentChunk, SyncState
 from services.chunking import ChunkingService
+from utils import canonical_document_key, normalized_tags
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,12 @@ class NotionSyncService:
                         "their existing content was retained. " + "; ".join(page_errors[:3])
                     )
 
+                removed_duplicates = await self._reconcile_duplicate_documents(db)
+                if removed_duplicates:
+                    logger.info(
+                        "Reconciled %d exact duplicate document rows after Notion sync",
+                        removed_duplicates,
+                    )
                 await self._complete_sync(sync_state_id, db, processed)
 
             except Exception as e:
@@ -144,6 +151,44 @@ class NotionSyncService:
             )
         )
         existing = result.scalar_one_or_none()
+        if existing is None:
+            # The same note may first be created in Atlas and then arrive from
+            # Notion with a new external ID. Match exact cross-source content
+            # before creating another canonical row.
+            candidates = (
+                await db.execute(
+                    select(Document)
+                    .where(Document.content_hash == content_hash)
+                    .order_by(Document.updated_at.desc(), Document.id.desc())
+                )
+            ).scalars().all()
+            incoming_key = canonical_document_key(title, normalized)
+            existing = next(
+                (
+                    candidate for candidate in candidates
+                    if incoming_key is not None
+                    and canonical_document_key(
+                        candidate.title,
+                        candidate.normalized_content or candidate.raw_content or "",
+                    ) == incoming_key
+                ),
+                None,
+            )
+            if existing is not None:
+                if not existing.source_id or existing.source_type != "notion":
+                    existing.source_type = "notion"
+                    existing.source_id = page_id
+                elif existing.source_id != page_id:
+                    existing_metadata = existing.metadata_ or {}
+                    aliases = {
+                        str(value) for value in existing_metadata.get("notion_page_ids", [])
+                        if str(value).strip()
+                    }
+                    aliases.update((str(existing.source_id), page_id))
+                    incoming_metadata["notion_page_id"] = str(
+                        existing_metadata.get("notion_page_id") or existing.source_id
+                    )
+                    incoming_metadata["notion_page_ids"] = sorted(aliases)
 
         metadata = self._merge_notion_metadata(
             existing.metadata_ if existing else None,
@@ -230,7 +275,7 @@ class NotionSyncService:
                         "document_id": str(document_id),
                         "chunk_index": chunk.index,
                         "created_at": datetime.now(timezone.utc).isoformat(),
-                        "tags": ",".join(metadata.get("tags", [])),
+                        "tags": ",".join(normalized_tags(metadata)),
                     }],
                 )
             except Exception as e:
@@ -254,6 +299,106 @@ class NotionSyncService:
         invalidate_search_cache()
         invalidate_graph_cache()
         logger.info(f"Synced Notion page: {title} ({len(chunks)} chunks)")
+
+    async def _reconcile_duplicate_documents(self, db: AsyncSession) -> int:
+        """Delete exact duplicate SQL/vector rows while preserving merged metadata."""
+        documents = (
+            await db.execute(
+                select(Document).order_by(Document.updated_at.desc(), Document.id.desc())
+            )
+        ).scalars().all()
+        groups: dict[str, list[Document]] = {}
+        for document in documents:
+            key = canonical_document_key(
+                document.title,
+                document.normalized_content or document.raw_content or "",
+            )
+            if key is not None:
+                groups.setdefault(key, []).append(document)
+
+        try:
+            collection = get_chroma_collection()
+        except Exception:
+            logger.exception("Duplicate reconciliation will continue without Chroma cleanup")
+            collection = None
+        removed = 0
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+
+            def freshness(document: Document) -> float:
+                value = document.updated_at or document.created_at
+                if value is None:
+                    return 0.0
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.timestamp()
+
+            keeper = max(
+                group,
+                key=lambda document: (
+                    document.source_type == "notion",
+                    bool(document.source_id),
+                    len(normalized_tags(document.metadata_ or {})),
+                    freshness(document),
+                    document.id,
+                ),
+            )
+            merged_metadata: dict = {}
+            merged_tags: list[str] = []
+            notion_page_ids: set[str] = set()
+            for document in reversed(group):
+                merged_metadata.update(document.metadata_ or {})
+                merged_tags.extend(normalized_tags(document.metadata_ or {}))
+                if document.source_type == "notion" and document.source_id:
+                    notion_page_ids.add(str(document.source_id))
+                for value in (document.metadata_ or {}).get("notion_page_ids", []):
+                    if str(value).strip():
+                        notion_page_ids.add(str(value))
+            merged_metadata.update(keeper.metadata_ or {})
+            if merged_tags:
+                merged_metadata["tags"] = list(dict.fromkeys(merged_tags))
+            if notion_page_ids:
+                merged_metadata["notion_page_ids"] = sorted(notion_page_ids)
+                merged_metadata["notion_page_id"] = str(
+                    merged_metadata.get("notion_page_id")
+                    or keeper.source_id
+                    or sorted(notion_page_ids)[0]
+                )
+            keeper.metadata_ = merged_metadata
+
+            for duplicate in group:
+                if duplicate.id == keeper.id:
+                    continue
+                if collection is not None:
+                    try:
+                        collection.delete(where={"document_id": str(duplicate.id)})
+                    except Exception:
+                        logger.exception(
+                            "Unable to remove duplicate vectors for document %s",
+                            duplicate.id,
+                        )
+                stale_states = (
+                    await db.execute(
+                        select(SyncState).where(
+                            SyncState.source_type == "notion_writeback",
+                            SyncState.source_id == str(duplicate.id),
+                        )
+                    )
+                ).scalars().all()
+                for state in stale_states:
+                    await db.delete(state)
+                await db.delete(duplicate)
+                removed += 1
+
+        if removed:
+            await db.commit()
+            from services.search_service import invalidate_search_cache
+            from routers.graph import invalidate_graph_cache
+
+            invalidate_search_cache()
+            invalidate_graph_cache()
+        return removed
 
     async def _fetch_page_content(self, notion, page_id: str) -> str:
         """Fetch all block content for a Notion page, recursively including child blocks."""

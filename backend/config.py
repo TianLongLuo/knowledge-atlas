@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     notion_database_id: str = ""
     notion_auto_sync_enabled: bool = True
     notion_auto_sync_interval_minutes: int = Field(default=5, ge=1, le=1440)
+    notion_writeback_debounce_seconds: float = Field(default=3.0, ge=0.5, le=60)
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-chat"

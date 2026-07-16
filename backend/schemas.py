@@ -136,9 +136,17 @@ class WritingReference(BaseModel):
     relevance: float
 
 
+class WritingFlowStep(BaseModel):
+    label: str
+    summary: str
+    relation: str = ""
+    strength: Literal["clear", "weak", "missing"] = "clear"
+
+
 class WritingAssistResponse(BaseModel):
     suggested_titles: list[str] = Field(default_factory=list)
     directions: list[str] = Field(default_factory=list)
+    logic_flow: list[WritingFlowStep] = Field(default_factory=list)
     logic_issues: list[WritingIssue] = Field(default_factory=list)
     grammar_issues: list[WritingIssue] = Field(default_factory=list)
     historical_references: list[WritingReference] = Field(default_factory=list)

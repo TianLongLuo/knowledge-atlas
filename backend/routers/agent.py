@@ -29,10 +29,18 @@ from schemas import (
     AgentMemoryStatusResponse, AgentStatusResponse, AskRequest, AskResponse, Citation,
     MemoryInsightResponse, MemoryLevelStatus, MemoryReviewRequest,
     TagSuggestRequest, TagSuggestResponse,
-    WritingAssistRequest, WritingAssistResponse, WritingIssue, WritingReference,
+    WritingAssistRequest, WritingAssistResponse, WritingFlowStep, WritingIssue, WritingReference,
 )
 from services.search_service import SearchService, SearchResult
-from utils import is_broad_identity_question, json_object_from_model, legacy_document_key, mmr_diversify, pseudo_id, _IDENTITY_FACETS
+from utils import (
+    _IDENTITY_FACETS,
+    is_broad_identity_question,
+    json_object_from_model,
+    legacy_document_key,
+    mmr_diversify,
+    normalized_text,
+    pseudo_id,
+)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -281,20 +289,22 @@ async def extract_candidate_insight(
         if not statement or confidence < 0.65:
             return
         # Check for duplicate AND supersede stale insights
-        duplicate = await db.scalar(
-            select(AgentMemory.id).where(
-                AgentMemory.level == "L3",
-                AgentMemory.content == statement
-            ).limit(1)
-        )
-        if duplicate:
+        existing_statements = (
+            await db.execute(
+                select(AgentMemory.content)
+                .where(AgentMemory.level == "L3")
+                .order_by(AgentMemory.created_at.desc())
+                .limit(200)
+            )
+        ).scalars().all()
+        if normalized_text(statement) in {normalized_text(value) for value in existing_statements}:
             return
         await save_memory(db, "global", "L3", "insight", statement[:2000], {
             "insight_type": str(payload.get("insight_type") or "pattern"),
             "confidence": confidence,
             "status": "pending",
             "evidence_document_ids": document_ids,
-            "first_seen": str(uuid.uuid4()),  # replace with timestamp in real impl
+            "first_seen": datetime.now().isoformat(),
         })
     except Exception:
         logger.exception("Unable to extract candidate memory insight")
@@ -457,10 +467,17 @@ async def writing_assist(
     _user: str = Depends(get_current_user),
 ):
     """Review a draft using DeepSeek and knowledge-base references."""
+    draft = body.content[:30_000]
+    structural_query = "\n".join(filter(None, (
+        body.title,
+        draft[:1200],
+        draft[max(0, len(draft) // 2 - 600):len(draft) // 2 + 600],
+        draft[-1200:],
+    )))
     search_results = await SearchService().search(
-        query=f"{body.title}\n{body.content[:2400]}",
+        query=structural_query,
         search_type="hybrid",
-        top_k=12,
+        top_k=20,
         db=db,
     )
     references: list[WritingReference] = []
@@ -500,15 +517,18 @@ async def writing_assist(
                     "content": (
                         "You are a private writing coach grounded in the user's knowledge base. "
                         "Review only the supplied draft and references; never invent facts. Return valid JSON with keys "
-                        "suggested_titles (max 4 strings), directions (max 4 strings), logic_issues and "
-                        "grammar_issues (max 6 objects each; keys: excerpt, issue, suggestion). Be concise, "
+                        "suggested_titles (max 4 strings), directions (max 4 strings), logic_flow "
+                        "(max 8 objects in the draft's actual argument order; keys: label, summary, relation, "
+                        "strength where strength is clear, weak, or missing), logic_issues and grammar_issues "
+                        "(max 6 objects each; keys: excerpt, issue, suggestion). The logic flow must show how "
+                        "the opening, claims, evidence, transitions, and conclusion connect; mark missing links. Be concise, "
                         "specific, constructive, and use the draft's language. Do not call stylistic preference a grammar error."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Current title: {body.title or '(untitled)'}\n\nDraft:\n{body.content[:30_000]}\n\n"
+                        f"Current title: {body.title or '(untitled)'}\n\nDraft:\n{draft}\n\n"
                         f"Relevant historical notes (reference only):\n{history_context}"
                     ),
                 },
@@ -543,9 +563,33 @@ async def writing_assist(
             ))
         return parsed
 
+    def flow_steps() -> list[WritingFlowStep]:
+        values = payload.get("logic_flow") or []
+        if not isinstance(values, list):
+            return []
+        parsed: list[WritingFlowStep] = []
+        for value in values[:8]:
+            if not isinstance(value, dict):
+                continue
+            label = str(value.get("label") or "").strip()
+            summary = str(value.get("summary") or "").strip()
+            if not label or not summary:
+                continue
+            strength = str(value.get("strength") or "clear").strip().lower()
+            if strength not in {"clear", "weak", "missing"}:
+                strength = "clear"
+            parsed.append(WritingFlowStep(
+                label=label[:100],
+                summary=summary[:500],
+                relation=str(value.get("relation") or "")[:200],
+                strength=strength,
+            ))
+        return parsed
+
     return WritingAssistResponse(
         suggested_titles=strings("suggested_titles", 4),
         directions=strings("directions", 4),
+        logic_flow=flow_steps(),
         logic_issues=issues("logic_issues"),
         grammar_issues=issues("grammar_issues"),
         historical_references=references,

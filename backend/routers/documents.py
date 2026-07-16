@@ -26,7 +26,7 @@ from schemas import (
 )
 from services.note_service import note_service
 from utils import (
-    content_fingerprint,
+    canonical_document_key,
     dominant_group,
     legacy_document_key,
     merge_chunk_texts,
@@ -92,12 +92,6 @@ def _get_legacy_chroma_docs(
                     if doc_id > 0 and doc_id in canonical_ids:
                         continue
 
-                fingerprint = content_fingerprint(
-                    str(meta.get("title") or "Untitled"), text, str(meta.get("source") or "chromadb")
-                )
-                if fingerprint in canonical_fingerprints:
-                    continue
-
                 logical_key = legacy_document_key(cid, meta, text)
                 group = groups.setdefault(logical_key, {
                     "id": _pseudo_id(logical_key),
@@ -117,9 +111,14 @@ def _get_legacy_chroma_docs(
                 group["content_parts"].append((int(meta.get("chunk_index") or 0), text))
 
         items = []
+        seen_content = set(canonical_fingerprints)
         for group in groups.values():
             ordered = [text for _, text in sorted(group.pop("content_parts"), key=lambda item: item[0])]
             full_content = merge_chunk_texts(ordered)
+            canonical_key = canonical_document_key(group["title"], full_content)
+            if canonical_key is None or canonical_key in seen_content:
+                continue
+            seen_content.add(canonical_key)
             group["raw_content"] = full_content
             group["normalized_content"] = full_content
             group["metadata"] = {**group["metadata"], "_chroma_ids": group["chroma_real_ids"]}
@@ -133,16 +132,29 @@ def _get_legacy_chroma_docs(
 def _deduplicate_postgres_documents(documents: list[Document]) -> list[Document]:
     """Return the same canonical PostgreSQL notes shown in the document list."""
     unique_documents: list[Document] = []
-    seen: set[str] = set()
+    seen_external: set[str] = set()
+    seen_content: set[str] = set()
     for document in documents:
-        key = (
+        external_key = (
             f"external:{document.source_type}:{document.source_id}"
             if document.source_id
-            else f"content:{document.content_hash or content_fingerprint(document.title, document.normalized_content or document.raw_content or '', document.source_type)}"
+            else ""
         )
-        if key in seen:
+        content_key = canonical_document_key(
+            document.title,
+            document.normalized_content or document.raw_content or "",
+        )
+        # Empty placeholder pages are synchronization artifacts rather than
+        # readable notes, so they should not inflate counts or filters.
+        if content_key is None:
             continue
-        seen.add(key)
+        if external_key and external_key in seen_external:
+            continue
+        if content_key in seen_content:
+            continue
+        if external_key:
+            seen_external.add(external_key)
+        seen_content.add(content_key)
         unique_documents.append(document)
     return unique_documents
 
@@ -295,9 +307,10 @@ async def list_documents(
     if source_type is None or source_type == "chromadb":
         canonical_ids = await _get_canonical_document_ids(db)
         canonical_fingerprints = {
-            content_fingerprint(d.title, d.normalized_content or d.raw_content or "", d.source_type)
+            canonical_document_key(d.title, d.normalized_content or d.raw_content or "")
             for d in unique_pg_docs
         }
+        canonical_fingerprints.discard(None)
         chroma_items = _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints)
         for ci in chroma_items:
             items.append(DocumentResponse(
@@ -363,10 +376,22 @@ async def document_filter_options(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    pg_documents = (await db.execute(select(Document))).scalars().all()
+    pg_documents = _deduplicate_postgres_documents(
+        (await db.execute(select(Document).order_by(Document.updated_at.desc()))).scalars().all()
+    )
     responses = [DocumentResponse.model_validate(document) for document in pg_documents]
     canonical_ids = {document.id for document in pg_documents}
-    for document in _get_legacy_chroma_docs(canonical_ids):
+    canonical_fingerprints = {
+        key for key in (
+            canonical_document_key(
+                document.title,
+                document.normalized_content or document.raw_content or "",
+            )
+            for document in pg_documents
+        )
+        if key is not None
+    }
+    for document in _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints):
         responses.append(DocumentResponse(
             id=document["id"], source_type=document["source_type"], source_id=document["source_id"],
             title=document["title"], raw_content=document["raw_content"],

@@ -10,7 +10,7 @@ export function AutosaveStatus({ state, message }: { state: AutosaveState; messa
     saving: { icon: Loader2, label: "Saving…", className: "text-blue-600" },
     saved: { icon: Check, label: "Saved", className: "text-emerald-600" },
     warning: { icon: TriangleAlert, label: message || "Saved · Notion sync pending", className: "text-amber-600" },
-    error: { icon: CloudOff, label: message || "Saved locally · retrying", className: "text-red-600" },
+    error: { icon: CloudOff, label: "Saved locally · retrying", className: "text-red-600" },
   }[state];
   const Icon = content.icon;
 

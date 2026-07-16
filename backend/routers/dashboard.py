@@ -18,7 +18,7 @@ from routers.documents import (
     _get_canonical_document_ids,
     _get_legacy_chroma_docs,
 )
-from utils import content_fingerprint
+from utils import canonical_document_key
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -39,13 +39,13 @@ async def dashboard_stats(
     try:
         canonical_ids = await _get_canonical_document_ids(db)
         canonical_fingerprints = {
-            content_fingerprint(
+            canonical_document_key(
                 document.title,
                 document.normalized_content or document.raw_content or "",
-                document.source_type,
             )
             for document in unique_pg_documents
         }
+        canonical_fingerprints.discard(None)
         legacy_documents = _get_legacy_chroma_docs(
             canonical_ids, canonical_fingerprints
         )
@@ -86,9 +86,10 @@ async def recent_documents(
     ]
     canonical_ids = {doc.id for doc in pg_docs}
     canonical_fingerprints = {
-        content_fingerprint(doc.title, doc.normalized_content or doc.raw_content or "", doc.source_type)
+        canonical_document_key(doc.title, doc.normalized_content or doc.raw_content or "")
         for doc in pg_docs
     }
+    canonical_fingerprints.discard(None)
     for doc in _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints):
         items.append({
             "id": str(doc["id"]),

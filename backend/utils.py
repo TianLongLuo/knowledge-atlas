@@ -56,6 +56,22 @@ def content_fingerprint(title: str, content: str, source: str = "") -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def canonical_document_key(title: str, content: str) -> str | None:
+    """Cross-source identity for one meaningful note.
+
+    Source IDs remain useful for incremental synchronization, but they cannot
+    detect the same note arriving through Atlas, Notion, and legacy Chroma.
+    This key intentionally ignores the storage source and only collapses exact
+    normalized title/body matches.
+    """
+    normalized_title = normalized_text(title)
+    normalized_content = normalized_text(content)
+    if not normalized_content and normalized_title in {"", "untitled", "无标题"}:
+        return None
+    payload = f"{normalized_title}\n{normalized_content}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def legacy_document_key(chroma_id: str, metadata: dict[str, Any], content: str = "") -> str:
     """Map legacy Chroma rows/chunks to one stable logical note identity."""
     stable_key = str(metadata.get("atlas_legacy_key") or "").strip()

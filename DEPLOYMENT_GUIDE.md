@@ -5,11 +5,12 @@ This document is written for a deployment agent. Follow the order below and do n
 ## 1. What this release changes
 
 - Notes created on the website are created in PostgreSQL, indexed in ChromaDB, and written to the configured Notion database.
-- Website edits update the same Notion page. Existing Notion blocks are replaced before the complete new body is uploaded, so repeated autosaves do not append duplicate text.
+- Website edits save to PostgreSQL immediately. Notion writes are debounced per document and serialized, so rapid autosaves become one external update instead of repeated block replacement.
 - The Notion database title property is discovered from its schema. It does not have to be named `Name`.
 - Long notes are uploaded in batches of 100 blocks; the previous silent 100-block truncation is removed.
 - Notion requests retry up to three times. A failed write remains saved in Atlas, is recorded as `notion_writeback/failed`, and is retried during the next automatic Notion synchronization cycle.
-- Optional Notion properties named `Tags`/`Tag`/`标签` and `Category`/`Type`/`分类` are populated when their types are `multi_select` and `select` respectively.
+- A missing Notion `Tags` property is created automatically as `multi_select`; existing `Tags`/`Tag`/`标签` fields are reused. `Category`/`Type`/`分类` is populated when present as `select`.
+- The document list and dashboard use one cross-source exact-content identity. A completed full Notion sync also removes exact duplicate PostgreSQL/vector rows while preserving merged tags and Notion page aliases.
 - The document editor has a compact, content-aligned toolbar and a wider independent writing surface.
 
 ## 2. Required services and persistent data
@@ -30,7 +31,7 @@ Never delete the two named volumes during a normal update. Do not use `docker co
 2. Open the target Notion database, add the integration through **Connections**, and grant permission to read, insert, and update content.
 3. Copy the database ID from its URL. Use the database ID, not a page ID and not a view ID.
 4. Confirm that the database contains exactly one title property. Its display name may be English or Chinese.
-5. Optional: add a `Tags` multi-select property and a `Category` select property. These are synchronized when present but are not required.
+5. Optional: add a `Category` select property. Atlas creates `Tags` automatically if it is absent, so the integration must be allowed to update the database schema.
 
 A valid token that has not been connected to the database will still fail with a Notion permission/object-not-found error. Sharing the database with the integration is mandatory.
 
@@ -59,6 +60,7 @@ NOTION_API_KEY=<notion-integration-secret>
 NOTION_DATABASE_ID=<notion-database-id>
 NOTION_AUTO_SYNC_ENABLED=true
 NOTION_AUTO_SYNC_INTERVAL_MINUTES=5
+NOTION_WRITEBACK_DEBOUNCE_SECONDS=3
 
 DEEPSEEK_API_KEY=<deepseek-key>
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
@@ -98,7 +100,7 @@ docker compose up -d --build backend frontend
 docker compose ps
 ```
 
-This release does not add a database migration. `sync_states` and document metadata already hold the additional synchronization state.
+This release does not add a database migration. `sync_states` and document metadata already hold the additional synchronization state. The first completed Notion sync reconciles exact duplicate rows created by older deployments.
 
 ## 7. Mandatory verification
 
@@ -120,11 +122,11 @@ Expected:
 
 1. Sign in to Atlas.
 2. Create a uniquely titled note such as `Notion writeback check 2026-07-15` and add several paragraphs.
-3. Wait until the editor shows **Saved**.
+3. Wait until the editor shows **Saved**, then allow several seconds for the debounced Notion write.
 4. Open the configured Notion database and confirm that exactly one page with that title exists and contains the complete body.
 5. Edit the same Atlas note, wait for **Saved**, and refresh Notion.
 6. Confirm that the same page changed and that the old body was not duplicated below the new body.
-7. Add tags in Atlas and confirm they appear when the optional Notion `Tags` multi-select property exists.
+7. Add tags in Atlas and confirm they appear in the Notion `Tags` multi-select property. If it did not exist, confirm Atlas created it.
 
 ### Synchronization state check
 
@@ -154,7 +156,7 @@ This endpoint requires the normal authenticated Atlas session.
 | Atlas says saved but warns Notion will retry | Local save succeeded; external write failed | Read `notion_writeback` status and backend logs; fix configuration, then use the retry endpoint or wait for automatic sync |
 | Duplicate body text from old deployments | Previous append-only updater | Edit and save the note once with this release; the complete body will replace top-level blocks |
 | Long note incomplete | Deployment still runs an old backend image | Rebuild backend and verify the running Git commit/image |
-| Repeated HTTP 429 | Notion rate limit | Let automatic retries run; avoid multiple backend replicas writing the same database until a distributed write queue is introduced |
+| Repeated HTTP 429 | Notion rate limit | Increase `NOTION_WRITEBACK_DEBOUNCE_SECONDS`; let automatic retries run; avoid multiple backend replicas writing the same database |
 
 Useful commands:
 
@@ -173,7 +175,7 @@ The second command intentionally prints only whether a token exists, never the t
 3. Do not introduce another direct document write path. All website create/update/delete operations must continue through `NoteService`.
 4. Do not append the full body on every Notion update. Replace old top-level blocks and upload every batch.
 5. Preserve `metadata.notion_page_id`, `metadata.notion_content_hash`, and the `notion_writeback` sync state.
-6. Keep one automatic Notion synchronization worker unless write-back locking is made distributed.
+6. Full-sync starts use a PostgreSQL advisory lock. Per-document debounce is process-local, so keep one backend application worker unless that queue is moved to Redis or another distributed worker.
 7. Before declaring deployment complete, perform the create-and-edit test in both Atlas and Notion.
 
 ## 10. Rollback
