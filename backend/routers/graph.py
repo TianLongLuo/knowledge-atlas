@@ -19,6 +19,7 @@ from utils import (
     normalized_tags,
     dominant_group,
     content_snippet,
+    document_display_title,
     display_label,
     legacy_document_key,
 )
@@ -257,7 +258,7 @@ async def get_full_graph(
             node_id, document_id = _node_identity(chroma_id, metadata, text)
             aggregate = aggregates.setdefault(node_id, {
                 "document_id": document_id,
-                "title": str(metadata.get("title") or f"Note {index + 1}"),
+                "title": str(metadata.get("title") or ""),
                 "source": str(metadata.get("source") or "chromadb"),
                 "metadata": metadata,
                 "texts": [],
@@ -277,7 +278,7 @@ async def get_full_graph(
         tag_counts: dict[str, int] = {}
         for node_id, aggregate in selected_aggregates:
             text = "\n".join(aggregate["texts"])
-            title = aggregate["title"]
+            title = document_display_title(aggregate["title"], text)
             metadata = aggregate["metadata"]
             group = dominant_group(text, title, metadata)
             source_type = normalized_source_type(aggregate["source"], metadata)

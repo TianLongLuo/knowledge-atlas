@@ -18,7 +18,7 @@ from routers.documents import (
     _get_canonical_document_ids,
     _get_legacy_chroma_docs,
 )
-from utils import canonical_document_key
+from utils import canonical_document_key, document_display_title
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -76,7 +76,10 @@ async def recent_documents(
     items = [
         {
             "id": str(doc.id),
-            "title": doc.title,
+            "title": document_display_title(
+                doc.title,
+                doc.normalized_content or doc.raw_content or "",
+            ),
             "source_type": doc.source_type,
             "created_at": (doc.created_at or doc.updated_at or datetime.fromtimestamp(0, timezone.utc)),
             "updated_at": doc.updated_at,
@@ -93,7 +96,10 @@ async def recent_documents(
     for doc in _get_legacy_chroma_docs(canonical_ids, canonical_fingerprints):
         items.append({
             "id": str(doc["id"]),
-            "title": doc["title"],
+            "title": document_display_title(
+                doc["title"],
+                doc["normalized_content"] or doc["raw_content"] or "",
+            ),
             "source_type": doc["source_type"],
             "created_at": doc["created_at"] or doc["updated_at"] or datetime.fromtimestamp(0, timezone.utc).isoformat(),
             "metadata": doc.get("metadata") or {},

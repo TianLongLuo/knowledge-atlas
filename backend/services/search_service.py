@@ -14,6 +14,7 @@ from models import Document
 from schemas import SearchResult
 from utils import (
     canonical_document_key,
+    document_display_title,
     dominant_group,
     legacy_document_key,
     normalized_tags,
@@ -161,7 +162,8 @@ class SearchService:
             if tag_match:
                 snippet = f"Tag: {query} · {snippet}"
             results.append(SearchResult(
-                title=doc.title, snippet=snippet, source=doc.source_type,
+                title=document_display_title(doc.title, content),
+                snippet=snippet, source=doc.source_type,
                 source_type=doc.source_type,
                 similarity_score=0.98 if tag_match else 0.92 if category_match else 0.5,
                 document_id=doc.id, chunk_id=None,
@@ -212,7 +214,7 @@ class SearchService:
                 seen_content.add(canonical_key)
                 snippet = self._extract_snippet(text, query)
                 results.append(SearchResult(
-                    title=title or "Untitled",
+                    title=document_display_title(title, text),
                     snippet=snippet,
                     source=doc_source or source_type or "chromadb",
                     source_type=doc_source or source_type,
@@ -292,7 +294,10 @@ class SearchService:
                     seen_documents.add(doc_id)
                     seen_content.add(canonical_key)
                     search_results.append(SearchResult(
-                        title=metadata.get("title", "Untitled"),
+                        title=document_display_title(
+                            str(metadata.get("title") or ""),
+                            document,
+                        ),
                         snippet=document[:500] if document else "",
                         source=metadata.get("source", source_type or "unknown"),
                         source_type=metadata.get("source", source_type),

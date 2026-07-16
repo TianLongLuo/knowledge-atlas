@@ -5,7 +5,7 @@ from utils import (
     pseudo_id, normalize_document_id,
     is_broad_identity_question, mmr_diversify, _IDENTITY_FACETS,
     content_snippet, dominant_group, normalized_source_type, normalized_tags,
-    content_fingerprint, legacy_document_key, merge_chunk_texts,
+    content_fingerprint, document_display_title, legacy_document_key, merge_chunk_texts,
 )
 from schemas import AskRequest, SearchResult
 from pydantic import ValidationError
@@ -60,6 +60,16 @@ def test_canonical_document_key_deduplicates_across_storage_sources():
         " 同一篇笔记 ", "第一段  第二段"
     )
     assert canonical_document_key("Untitled", "") is None
+    assert canonical_document_key("", "没有标题的正文") == canonical_document_key(
+        "Untitled", "没有标题的正文"
+    )
+
+
+def test_untitled_document_uses_first_meaningful_body_line_for_display():
+    content = "\n\n## 这是正文生成的标题\n\n后续内容"
+    assert document_display_title("", content) == "这是正文生成的标题"
+    assert document_display_title("Untitled", "- 第一条正文") == "第一条正文"
+    assert document_display_title("", "") == "Untitled note"
 
 
 def test_chunk_families_and_overlap_reconstruct_complete_note():
@@ -452,10 +462,12 @@ def test_dashboard_and_document_list_share_postgres_deduplication():
         Document(source_type="manual", title="Standalone", raw_content="unique"),
         Document(source_type="notion", source_id="page-2", title="Standalone", raw_content="unique"),
         Document(source_type="notion", source_id="blank", title="Untitled", raw_content=""),
+        Document(source_type="manual", title="", raw_content="没有标题但有正文"),
+        Document(source_type="notion", title="Untitled", raw_content="没有标题但有正文"),
     ]
 
     unique = _deduplicate_postgres_documents(documents)
-    assert [document.title for document in unique] == ["Older", "Standalone"]
+    assert [document.title for document in unique] == ["Older", "Standalone", ""]
 
 
 def test_document_note_date_prefers_source_metadata():

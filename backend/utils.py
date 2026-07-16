@@ -56,19 +56,67 @@ def content_fingerprint(title: str, content: str, source: str = "") -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_UNTITLED_DOCUMENT_TITLES = {
+    "",
+    "untitled",
+    "untitled note",
+    "(untitled)",
+    "无标题",
+    "未命名",
+    "未命名笔记",
+}
+
+
+def has_explicit_document_title(title: str) -> bool:
+    """Return whether a title is meaningful rather than an importer placeholder."""
+    return normalized_text(title) not in _UNTITLED_DOCUMENT_TITLES
+
+
+def document_display_title(title: str, content: str, max_len: int = 64) -> str:
+    """Return an explicit title or a readable excerpt for an untitled note."""
+    raw_title = " ".join((title or "").split())
+    if has_explicit_document_title(raw_title):
+        return raw_title
+
+    candidate = ""
+    for line in (content or "").splitlines():
+        cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", line)
+        cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = re.sub(
+            r"^\s*(?:#{1,6}|[-*+]|>\s*|\d+[.)])\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"[*_`~]+", "", cleaned)
+        cleaned = " ".join(cleaned.split()).strip()
+        if cleaned:
+            candidate = cleaned
+            break
+
+    if not candidate:
+        candidate = " ".join(re.sub(r"<[^>]+>", " ", content or "").split()).strip()
+    if not candidate:
+        return "Untitled note"
+    if len(candidate) <= max_len:
+        return candidate
+    return candidate[:max_len].rstrip(" ,，。;；:：-—") + "…"
+
+
 def canonical_document_key(title: str, content: str) -> str | None:
     """Cross-source identity for one meaningful note.
 
     Source IDs remain useful for incremental synchronization, but they cannot
     detect the same note arriving through Atlas, Notion, and legacy Chroma.
-    This key intentionally ignores the storage source and only collapses exact
-    normalized title/body matches.
+    Untitled notes use their complete body as identity, while truly blank
+    placeholders are ignored.
     """
     normalized_title = normalized_text(title)
     normalized_content = normalized_text(content)
-    if not normalized_content and normalized_title in {"", "untitled", "无标题"}:
+    explicit_title = has_explicit_document_title(title)
+    if not normalized_content and not explicit_title:
         return None
-    payload = f"{normalized_title}\n{normalized_content}"
+    payload = f"{normalized_title if explicit_title else ''}\n{normalized_content}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

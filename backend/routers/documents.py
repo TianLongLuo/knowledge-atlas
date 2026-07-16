@@ -27,6 +27,7 @@ from schemas import (
 from services.note_service import note_service
 from utils import (
     canonical_document_key,
+    document_display_title,
     dominant_group,
     legacy_document_key,
     merge_chunk_texts,
@@ -326,6 +327,14 @@ async def list_documents(
                 updated_at=ci["updated_at"],
             ))
 
+    # Keep the stored title untouched for editing, but make list responses
+    # readable when an importer supplied no title.
+    for item in items:
+        item.title = document_display_title(
+            item.title,
+            item.normalized_content or item.raw_content or "",
+        )
+
     try:
         start_date = datetime.fromisoformat(date_from).date() if date_from else None
         end_date = datetime.fromisoformat(date_to).date() if date_to else None
@@ -398,6 +407,11 @@ async def document_filter_options(
             normalized_content=document["normalized_content"], metadata=document["metadata"],
             created_at=document["created_at"], updated_at=document["updated_at"],
         ))
+    for document in responses:
+        document.title = document_display_title(
+            document.title,
+            document.normalized_content or document.raw_content or "",
+        )
     category_tags: dict[str, set[str]] = {}
     for document in responses:
         category_tags.setdefault(_document_category(document), set()).update(_document_tags(document))
