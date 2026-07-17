@@ -202,7 +202,7 @@ export default function AgentPage() {
 
       {/* Conversation surface — centered, full-height */}
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" ref={scrollRef}>
+        <div className="cyber-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2" ref={scrollRef}>
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-16">
               <Bot className="h-10 w-10 text-muted-foreground/20 mb-4" />
@@ -332,7 +332,7 @@ export default function AgentPage() {
               onKeyDown={handleKeyDown}
               disabled={loading}
               rows={1}
-              className="flex min-h-10 max-h-32 flex-1 resize-none rounded-xl border border-input bg-background/80 px-3 py-2 text-sm shadow-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50"
+              className="cyber-scrollbar flex min-h-10 max-h-32 flex-1 resize-none rounded-xl border border-input bg-background/80 px-3 py-2 text-sm shadow-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50"
             />
             <Button onClick={() => handleSend()} disabled={loading || !input.trim()} size="icon">
               {loading ? (
@@ -354,7 +354,7 @@ export default function AgentPage() {
               About you
             </DialogTitle>
           </DialogHeader>
-          <div className="max-h-[60vh] overflow-y-auto space-y-3">
+          <div className="cyber-scrollbar max-h-[60vh] space-y-3 overflow-y-auto pr-1">
             <p className="text-xs text-muted-foreground">
               Atlas can notice durable goals, values, beliefs, and recurring tensions in your notes and conversations. These remain suggestions until you confirm them.
             </p>

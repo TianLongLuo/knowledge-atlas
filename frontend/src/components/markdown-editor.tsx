@@ -83,7 +83,7 @@ export function MarkdownEditor({ value, onChange, placeholder = "Start writingâ€
         </div>
       </div>
       {preview ? (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-16 pt-5 [scrollbar-gutter:stable] sm:px-10">
+        <div className="cyber-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-16 pt-5 sm:px-10">
           <MarkdownContent>{value || "Nothing to preview yet."}</MarkdownContent>
         </div>
       ) : (
@@ -94,7 +94,7 @@ export function MarkdownEditor({ value, onChange, placeholder = "Start writingâ€
           value={value}
           onChange={(event) => onChange(event.target.value)}
           spellCheck
-          className="min-h-0 w-full flex-1 resize-none overflow-y-auto overscroll-contain bg-transparent px-5 pb-24 pt-4 text-[16px] leading-[1.9] text-slate-800 caret-blue-600 outline-none [scrollbar-gutter:stable] placeholder:text-slate-300 selection:bg-blue-100 sm:px-10"
+          className="cyber-scrollbar min-h-0 w-full flex-1 resize-none overflow-y-auto overscroll-contain bg-transparent px-5 pb-24 pt-4 text-[16px] leading-[1.9] text-slate-800 caret-blue-600 outline-none placeholder:text-slate-300 selection:bg-blue-100 sm:px-10"
         />
       )}
     </div>

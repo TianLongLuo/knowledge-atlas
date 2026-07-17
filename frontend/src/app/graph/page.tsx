@@ -329,7 +329,7 @@ export default function GraphPage() {
         </div>
 
         {showControls && (
-          <aside className="absolute bottom-3 left-3 top-14 z-10 w-64 overflow-y-auto rounded-2xl border border-white/90 bg-white/78 p-3 text-slate-700 shadow-[0_16px_50px_rgba(64,83,130,0.16)] backdrop-blur-xl">
+          <aside className="cyber-scrollbar absolute bottom-3 left-3 top-14 z-10 w-64 overflow-y-auto rounded-2xl border border-white/90 bg-white/78 p-3 text-slate-700 shadow-[0_16px_50px_rgba(64,83,130,0.16)] backdrop-blur-xl">
             <div className="mb-4 flex items-center justify-between"><span className="text-sm font-semibold">Graph controls</span><button onClick={() => setShowControls(false)}><X className="h-4 w-4" /></button></div>
             <ControlSection title="Types" icon={<Filter className="h-3.5 w-3.5" />}>
               {typeEntries.map(([type, count]) => <FilterRow key={type} label={type} count={count} color={typeColor(type)} enabled={!hiddenTypes.has(type)} onClick={() => toggleSet(setHiddenTypes, type)} />)}
@@ -350,7 +350,7 @@ export default function GraphPage() {
         )}
 
         {focusedNode && (
-          <aside className="absolute bottom-3 right-3 top-3 z-10 w-80 overflow-y-auto rounded-2xl border border-white/90 bg-white/82 p-4 text-slate-800 shadow-[0_16px_50px_rgba(64,83,130,0.16)] backdrop-blur-xl">
+          <aside className="cyber-scrollbar absolute bottom-3 right-3 top-3 z-10 w-80 overflow-y-auto rounded-2xl border border-white/90 bg-white/82 p-4 text-slate-800 shadow-[0_16px_50px_rgba(64,83,130,0.16)] backdrop-blur-xl">
             <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: typeColor(focusedNode.node_type) }} /><span className="text-xs uppercase tracking-wide text-slate-500">{focusedNode.node_type}</span></div>
             <h2 className="mt-2 text-lg font-semibold leading-snug">{focusedNode.label}</h2>
             <p className="mt-1 text-xs text-slate-500">{focusedNode.degree} links · {focusedNode.tags.join(", ") || "No tags"}</p>

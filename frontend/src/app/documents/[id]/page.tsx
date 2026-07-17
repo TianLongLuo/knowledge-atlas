@@ -213,7 +213,7 @@ export default function DocumentDetailPage() {
           </div>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="cyber-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <article className="mx-auto max-w-4xl px-8 pb-20 pt-14 sm:px-14">
             <h1 className="font-heading text-4xl font-semibold tracking-tight text-slate-900">{document.title}</h1>
             <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-400"><Badge variant="outline">{sourceLabel(document.source_type)}</Badge>{document.tags.map((tag) => <Badge key={tag} variant="secondary">#{tag}</Badge>)}<span>Updated {new Date(document.updated_at || document.created_at).toLocaleString()}</span></div>

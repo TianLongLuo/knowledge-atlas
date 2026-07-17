@@ -118,7 +118,7 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
         {!result && !loading && !error && <p className="text-xs leading-5 text-slate-500">Keep writing. Atlas analyzes quietly after you pause.</p>}
         {loading && !result && <div className="flex items-center gap-2 py-8 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" />Reading the draft…</div>}
         {error && <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{error}</p>}
-        {result && <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain pr-1">
+        {result && <div className="cyber-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain pr-1">
         <section>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-blue-700"><Sparkles className="h-3.5 w-3.5" />Suggested titles</div>
           <div className="space-y-2">{result.suggested_titles.map((suggestion) => <button type="button" key={suggestion} onClick={() => onApplyTitle(suggestion)} className="flex w-full items-start justify-between gap-2 rounded-xl border border-blue-100 bg-white/80 p-3 text-left text-sm text-slate-800 transition hover:border-blue-300 hover:bg-white"><span>{suggestion}</span><Check className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /></button>)}</div>
@@ -175,11 +175,12 @@ export function AIWritingAssistant({ title, content, documentId, onApplyTitle }:
         })}
         onMouseEnter={openAfterIntent}
         onMouseLeave={closeAfterLeave}
-        className={`pointer-events-auto sticky top-3 block h-28 w-3 shrink-0 rounded-full border shadow-sm backdrop-blur transition-all duration-300 hover:w-3.5 ${loading || justUpdated ? "animate-pulse border-blue-300 bg-blue-400 shadow-[0_0_18px_rgba(96,165,250,.55)]" : insightCount > 0 ? "border-blue-300 bg-gradient-to-b from-blue-400 to-violet-400" : "border-slate-300 bg-white/90 hover:border-blue-300"}`}
+        className={`pointer-events-auto sticky top-3 grid h-9 w-9 shrink-0 place-items-center rounded-xl border backdrop-blur transition-all duration-300 hover:scale-105 ${loading || justUpdated ? "animate-pulse border-cyan-300 bg-gradient-to-br from-cyan-400 to-violet-500 text-white shadow-[0_0_20px_rgba(59,130,246,.6)]" : insightCount > 0 ? "border-cyan-300/80 bg-gradient-to-br from-cyan-400 via-blue-500 to-violet-500 text-white shadow-[0_0_16px_rgba(99,102,241,.4)]" : "border-slate-200 bg-white/80 text-slate-500 shadow-[0_8px_24px_rgba(15,23,42,.10)] hover:border-cyan-300 hover:text-blue-600 hover:shadow-[0_0_16px_rgba(59,130,246,.28)]"}`}
         aria-expanded={expanded}
         aria-label={expanded ? "Close AI writing insights" : "Open AI writing insights"}
         title="AI writing insights"
       >
+        <Sparkles className="h-4 w-4" />
         <span className="sr-only">AI writing insights{insightCount ? `, ${insightCount} suggestions` : ""}</span>
       </button>
     </div>

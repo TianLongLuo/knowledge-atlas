@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/lib/auth-context";
 import { Sidebar } from "@/components/sidebar";
+import { CyberScrollIndicator } from "@/components/cyber-scroll-indicator";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
@@ -49,8 +50,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
+      <CyberScrollIndicator />
       {/* Full-width content — sidebar overlays, no permanent reservation */}
-      <main className="flex-1 w-full overflow-y-auto p-4 md:p-6 lg:p-8">
+      <main className="cyber-scrollbar flex-1 w-full overflow-y-auto p-4 md:p-6 lg:p-8">
         {children}
       </main>
     </div>

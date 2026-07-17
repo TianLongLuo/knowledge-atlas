@@ -177,7 +177,7 @@ export function NoteReaderProvider({ children }: { children: React.ReactNode }) 
             </div>
           </header>
 
-          <div className={`min-h-0 flex-1 overscroll-contain ${editing ? "overflow-hidden px-4 sm:px-7" : "overflow-y-auto"}`}>
+          <div className={`min-h-0 flex-1 overscroll-contain ${editing ? "overflow-hidden px-4 sm:px-7" : "cyber-scrollbar overflow-y-auto"}`}>
             {loading && <div className="grid min-h-[45vh] place-items-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>}
             {error && !document && <p className="m-8 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!loading && document && (editing ? (
