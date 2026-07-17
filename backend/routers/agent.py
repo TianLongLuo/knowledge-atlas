@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import json
 import uuid
 from datetime import datetime
 
@@ -32,13 +31,13 @@ from schemas import (
     WritingAssistRequest, WritingAssistResponse, WritingFlowStep, WritingIssue, WritingReference,
 )
 from services.search_service import SearchService, SearchResult
+from services.memory_service import memory_automation, memory_is_stale
 from utils import (
     _IDENTITY_FACETS,
     is_broad_identity_question,
     json_object_from_model,
     legacy_document_key,
     mmr_diversify,
-    normalized_text,
     pseudo_id,
 )
 
@@ -86,15 +85,53 @@ async def save_memory(
 
 def insight_response(memory: AgentMemory) -> MemoryInsightResponse:
     metadata = memory.metadata_ or {}
+    state = str(metadata.get("memory_state") or "hypothesis")
+    if state not in {"fact", "trend", "hypothesis"}:
+        state = "hypothesis"
+    evidence_ids: list[int] = []
+    for value in metadata.get("evidence_document_ids", []):
+        try:
+            evidence_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
     return MemoryInsightResponse(
         id=str(memory.id),
         statement=memory.content,
         insight_type=str(metadata.get("insight_type") or "pattern"),
         confidence=float(metadata.get("confidence") or 0),
         status=str(metadata.get("status") or "pending"),
-        evidence_document_ids=[int(value) for value in metadata.get("evidence_document_ids", []) if str(value).isdigit()],
+        memory_state=state,
+        source=str(metadata.get("source") or "unknown"),
+        trust_source=str(metadata.get("trust_source") or "auto_observed"),
+        pinned=bool(metadata.get("pinned")),
+        requires_review=bool(metadata.get("requires_review")),
+        conflict_with=metadata.get("conflict_with"),
+        occurrences=max(1, int(metadata.get("occurrences") or 1)),
+        stale=memory_is_stale(metadata),
+        evidence_document_ids=evidence_ids,
+        first_seen=metadata.get("first_seen"),
+        last_seen=metadata.get("last_seen"),
         created_at=memory.created_at,
     )
+
+
+def select_response_strategy(question: str, broad_identity: bool = False) -> str:
+    """Choose an internal response style without exposing mode switches in the UI."""
+    lowered = question.casefold()
+    socratic_markers = (
+        "问我问题", "反问我", "挑战我的", "苏格拉底", "帮我做选择", "该不该",
+        "是否应该", "challenge me", "ask me questions", "socratic", "trade-off",
+    )
+    reflection_markers = (
+        "我是谁", "为什么我", "我的想法", "我的模式", "怎么看我", "了解自己",
+        "反思", "变化", "矛盾", "反复出现", "who am i", "about me", "my pattern",
+        "why do i", "reflect", "recurring", "becoming",
+    )
+    if any(marker in lowered for marker in socratic_markers):
+        return "socratic"
+    if broad_identity or any(marker in lowered for marker in reflection_markers):
+        return "reflection"
+    return "knowledge"
 
 
 # ── Multi-facet retrieval ─────────────────────────────────────────
@@ -239,10 +276,13 @@ async def memory_insights(
     db: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ):
-    query = select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(100)
+    await memory_automation.upgrade_legacy_memories(db)
+    query = select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(300)
     memories = (await db.execute(query)).scalars().all()
     results = [insight_response(memory) for memory in memories]
-    return [item for item in results if not status or item.status == status]
+    if status:
+        return [item for item in results if item.status == status]
+    return [item for item in results if item.status != "rejected"]
 
 
 @router.post("/memory/insights/{memory_id}/review", response_model=MemoryInsightResponse)
@@ -254,92 +294,47 @@ async def review_memory_insight(
 ):
     memory = await db.get(AgentMemory, memory_id)
     if not memory or memory.level != "L3":
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Memory insight not found")
-    memory.metadata_ = {**(memory.metadata_ or {}), "status": body.status}
+    action = body.action
+    if not action and body.status:
+        action = "confirm" if body.status == "confirmed" else "reject"
+    if not action:
+        raise HTTPException(status_code=422, detail="A memory action is required")
+
+    metadata = dict(memory.metadata_ or {})
+    now = datetime.now().astimezone().isoformat()
+    if action in {"confirm", "pin"}:
+        metadata.update({
+            "status": "confirmed",
+            "pinned": action == "pin" or bool(metadata.get("pinned")),
+            "requires_review": False,
+            "trust_source": "user_pinned" if action == "pin" else "user_confirmed",
+            "last_seen": now,
+        })
+    elif action in {"reject", "forget"}:
+        metadata.update({
+            "status": "rejected",
+            "pinned": False,
+            "requires_review": False,
+            "forgotten_at": now,
+            "trust_source": "user_forgotten",
+        })
+    elif action == "correct":
+        if not body.statement or not body.statement.strip():
+            raise HTTPException(status_code=422, detail="Corrected memory text is required")
+        memory.content = body.statement.strip()
+        metadata.update({
+            "status": "confirmed",
+            "memory_state": "fact",
+            "confidence": 1.0,
+            "pinned": True,
+            "requires_review": False,
+            "trust_source": "user_corrected",
+            "last_seen": now,
+        })
+    memory.metadata_ = metadata
     await db.flush()
     return insight_response(memory)
-
-
-async def extract_candidate_insight(
-    client: AsyncOpenAI,
-    db: AsyncSession,
-    question: str,
-    answer: str,
-    document_ids: list[int],
-) -> None:
-    """Extract one evidence-backed hypothesis; never auto-confirm it.
-
-    Now also extracts from note creation/update corpus growth.
-    """
-    try:
-        response = await client.chat.completions.create(
-            model=settings.deepseek_model,
-            messages=[
-                {"role": "system", "content": "Extract at most one durable user insight from the exchange. Return JSON only with keys statement, insight_type, confidence. insight_type must be value, goal, belief, tension, or pattern. Use confidence 0 when there is no durable insight. Do not diagnose personality or mental health."},
-                {"role": "user", "content": f"Question: {question}\nAnswer: {answer[:3000]}"},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=220,
-        )
-        payload = json.loads(response.choices[0].message.content or "{}")
-        statement = str(payload.get("statement") or "").strip()
-        confidence = max(0.0, min(1.0, float(payload.get("confidence") or 0)))
-        if not statement or confidence < 0.65:
-            return
-        # Check for duplicate AND supersede stale insights
-        existing_statements = (
-            await db.execute(
-                select(AgentMemory.content)
-                .where(AgentMemory.level == "L3")
-                .order_by(AgentMemory.created_at.desc())
-                .limit(200)
-            )
-        ).scalars().all()
-        if normalized_text(statement) in {normalized_text(value) for value in existing_statements}:
-            return
-        await save_memory(db, "global", "L3", "insight", statement[:2000], {
-            "insight_type": str(payload.get("insight_type") or "pattern"),
-            "confidence": confidence,
-            "status": "pending",
-            "evidence_document_ids": document_ids,
-            "first_seen": datetime.now().isoformat(),
-        })
-    except Exception:
-        logger.exception("Unable to extract candidate memory insight")
-
-
-async def extract_insights_from_corpus(
-    client: AsyncOpenAI,
-    db: AsyncSession,
-    document_ids: list[int],
-) -> None:
-    """Extract candidate insights directly from note corpus growth.
-
-    Called after note creation/update to grow durable insights from the corpus.
-    """
-    if not document_ids:
-        return
-    try:
-        # Get document content
-        from models import Document
-        docs = (await db.execute(
-            select(Document).where(Document.id.in_(document_ids[:5]))
-        )).scalars().all()
-
-        for doc in docs:
-            content = doc.normalized_content or doc.raw_content or ""
-            if len(content) < 100:
-                continue
-            await extract_candidate_insight(
-                client, db,
-                f"Extract insights from this note: {doc.title}",
-                content[:3000],
-                [doc.id],
-            )
-    except Exception:
-        logger.exception("Unable to extract insights from corpus")
 
 
 # ── Status endpoints ──────────────────────────────────────────────
@@ -366,7 +361,7 @@ async def memory_status(
             MemoryLevelStatus(level="L0", title="Conversation", count=counts.get("L0", 0), description="Raw user and assistant turns stored for session continuity."),
             MemoryLevelStatus(level="L1", title="Vector knowledge", count=vector_count, description="Persistent Chroma chunks available for semantic retrieval."),
             MemoryLevelStatus(level="L2", title="Retrieved context", count=counts.get("L2", 0), description="Knowledge snapshots actually retrieved and used in answers."),
-            MemoryLevelStatus(level="L3", title="Reviewed insights", count=counts.get("L3", 0), description="Evidence-backed hypotheses that you can confirm or reject."),
+            MemoryLevelStatus(level="L3", title="Automatic memory", count=counts.get("L3", 0), description="Direct facts, recurring trends, and inspectable hypotheses learned from your writing."),
         ],
     )
 
@@ -622,16 +617,17 @@ async def ask_question(
     recent_user_context = [memory.content for memory in recent_history if memory.role == "user"][-3:]
     retrieval_query = "\n".join([*recent_user_context, body.question])
 
-    # Confirmed insights only
-    insight_result = await db.execute(
-        select(AgentMemory).where(AgentMemory.level == "L3").order_by(AgentMemory.created_at.desc()).limit(30)
-    )
-    confirmed_insights = [
-        memory for memory in insight_result.scalars().all()
-        if (memory.metadata_ or {}).get("status") == "confirmed"
-    ][:12]
+    # Trusted facts steer the answer directly. Strong recurring patterns may
+    # help, but are explicitly labeled as tentative so inference never silently
+    # becomes biography.
+    confirmed_insights, emerging_insights = await memory_automation.context_memories(db)
 
     await save_memory(db, session_id, "L0", "user", body.question)
+    memory_automation.schedule_conversation(
+        session_id,
+        body.question,
+        [],
+    )
 
     # Step 1: Retrieve relevant chunks — with intent routing
     broad_identity = is_broad_identity_question(body.question)
@@ -746,9 +742,10 @@ async def ask_question(
 
     mode_instructions = {
         "knowledge": "Answer directly and accurately from the supplied notes. Use concise Markdown headings and lists when they improve readability.",
-        "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and end with one clarifying question.",
-        "socratic": "Use a Socratic style. Do not make the decision for the user. Connect the notes to the present question and ask one precise question that exposes an assumption or trade-off.",
+        "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and ask at most one clarifying question when it would materially help.",
+        "socratic": "First give a brief evidence-based reflection, then ask at most one precise question that exposes an assumption or trade-off. Do not withhold a direct answer when the user asked for one.",
     }
+    selected_strategy = body.mode if body.mode != "auto" else select_response_strategy(body.question, broad_identity)
 
     broad_identity_preamble = ""
     if broad_identity:
@@ -770,7 +767,8 @@ async def ask_question(
         "Treat notes as the user's writing or collected knowledge, not automatically as biography; "
         "state the difference between direct self-disclosure and inference. Cite source numbers such as [Doc 1]. "
         + broad_identity_preamble
-        + mode_instructions[body.mode]
+        + " Choose the most useful balance of direct answer, reflection, and questioning for this request. "
+        + mode_instructions[selected_strategy]
     )
 
     try:
@@ -786,8 +784,10 @@ async def ask_question(
                 *history_messages,
                 {
                     "role": "user",
-                    "content": f"Confirmed long-term memories (user reviewed):\n"
+                    "content": f"Trusted long-term memories (direct user statements or user-pinned):\n"
                     + ("\n".join(f"- {memory.content}" for memory in confirmed_insights) or "- None yet")
+                    + "\n\nEmerging recurring patterns (tentative; mention only as inference):\n"
+                    + ("\n".join(f"- {memory.content}" for memory in emerging_insights) or "- None yet")
                     + f"\n\nContext retrieved from your knowledge base:\n\n{context}\n\n"
                     f"Question: {body.question}\n\n"
                     f"Please answer based on the context above. Include citations "
@@ -799,10 +799,6 @@ async def ask_question(
         )
         answer = response.choices[0].message.content or ""
         await save_memory(db, session_id, "L0", "assistant", answer)
-        await extract_candidate_insight(
-            client, db, body.question, answer,
-            [r.document_id for r in context_results]
-        )
     except Exception as exc:
         logger.exception("DeepSeek request failed; verify DeepSeek server configuration")
         diagnostic = deepseek_error_message(exc)
@@ -855,84 +851,9 @@ async def build_identity_profile(
     client: AsyncOpenAI,
     db: AsyncSession,
 ) -> dict:
-    """Analyze the full note corpus to build a comprehensive user identity profile.
-
-    Extracts facets: who the user is, values, goals, projects, beliefs, tensions,
-    recurring themes, and knowledge domains. Stores results as confirmed L3 insights.
-    Runs idempotently — existing identical insights are skipped.
-    """
-    from models import Document
-
-    result = await db.execute(
-        select(Document.normalized_content, Document.title, Document.id)
-        .where(Document.normalized_content.isnot(None))
-        .order_by(Document.updated_at.desc())
-        .limit(50)
-    )
-    docs = result.all()
-    if not docs:
-        return {"status": "skipped", "reason": "No documents to analyze"}
-
-    # Collect content summaries (truncated)
-    corpus_snippets = []
-    for content, title, doc_id in docs:
-        if content:
-            corpus_snippets.append(f"--- {title} ---\n{content[:800]}")
-    corpus_text = "\n\n".join(corpus_snippets)
-
+    """Refresh the automatic profile without promoting model guesses to facts."""
     try:
-        response = await client.chat.completions.create(
-            model=settings.deepseek_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are analyzing a user's personal note corpus to build their "
-                        "identity profile. Extract durable, evidence-backed insights across "
-                        "these facets: identity (who they are), core_values, goals, "
-                        "active_projects, beliefs, tensions_or_changes, recurring_themes, "
-                        "knowledge_domains. Return JSON with key 'insights' as an array of "
-                        "objects: {facet, statement, confidence (0.0-1.0)}. Only include "
-                        "statements clearly supported by the notes. Use confidence 0 when "
-                        "the corpus lacks evidence for a facet. Never fabricate. "
-                        "Output must be valid JSON."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Analyze this note corpus and extract identity insights:\n\n{corpus_text[:12000]}",
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=1500,
-        )
-        payload = json.loads(response.choices[0].message.content or "{}")
-        new_insights = 0
-        for item in payload.get("insights", []):
-            statement = str(item.get("statement", "")).strip()
-            confidence = max(0.0, min(1.0, float(item.get("confidence", 0))))
-            if not statement or confidence < 0.5:
-                continue
-            # Check duplicate
-            existing = await db.scalar(
-                select(AgentMemory.id).where(
-                    AgentMemory.level == "L3",
-                    AgentMemory.content == statement,
-                ).limit(1)
-            )
-            if existing:
-                continue
-            await save_memory(db, "corpus_analysis", "L3", "insight", statement[:2000], {
-                "insight_type": str(item.get("facet", "pattern")),
-                "confidence": confidence,
-                "status": "confirmed",
-                "source": "corpus_analysis",
-                "created_at": str(uuid.uuid4()),
-            })
-            new_insights += 1
-        await db.commit()
-        return {"status": "completed", "new_insights": new_insights}
+        return await memory_automation.analyze_full_corpus(client, db)
     except Exception:
         logger.exception("Corpus identity profile extraction failed")
         return {"status": "error"}
@@ -966,17 +887,10 @@ async def extract_insights_from_corpus_endpoint(
     if not settings.deepseek_api_key:
         return {"status": "skipped", "reason": "DeepSeek not configured"}
 
-    from models import Document
-    result = await db.execute(
-        select(Document.id).order_by(Document.updated_at.desc()).limit(10)
-    )
-    doc_ids = [row[0] for row in result.all()]
-
     client = AsyncOpenAI(
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
         timeout=settings.deepseek_timeout_seconds,
         max_retries=2,
     )
-    await extract_insights_from_corpus(client, db, doc_ids)
-    return {"status": "completed", "documents_scanned": len(doc_ids)}
+    return await memory_automation.analyze_full_corpus(client, db)

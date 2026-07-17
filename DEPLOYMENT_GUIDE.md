@@ -12,6 +12,8 @@ This document is written for a deployment agent. Follow the order below and do n
 - A missing Notion `Tags` property is created automatically as `multi_select`; existing `Tags`/`Tag`/`标签` fields are reused. `Category`/`Type`/`分类` is populated when present as `select`.
 - The document list and dashboard use one cross-source exact-content identity. A completed full Notion sync also removes exact duplicate PostgreSQL/vector rows while preserving merged tags and Notion page aliases.
 - The document editor has a compact, content-aligned toolbar and a wider independent writing surface.
+- The AI assistant now has one automatic response path instead of exposed Knowledge/Reflection/Socratic switches. It still uses the same full vector retrieval and citations.
+- Long-term memory is automatic and inspectable. Saved notes are analyzed after an autosave debounce, conversations learn only from user messages, exact/near duplicates merge, temporary memories decay, and only conflicts or sensitive inferences request attention.
 
 ## 2. Required services and persistent data
 
@@ -67,6 +69,10 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_TIMEOUT_SECONDS=45
 
+MEMORY_AUTOMATION_ENABLED=true
+MEMORY_EXTRACTION_DEBOUNCE_SECONDS=12
+MEMORY_PROFILE_INTERVAL_MINUTES=360
+
 CORS_ORIGINS=["https://knowledge.example.com"]
 SESSION_COOKIE_SECURE=true
 ```
@@ -100,7 +106,7 @@ docker compose up -d --build backend frontend
 docker compose ps
 ```
 
-This release does not add a database migration. `sync_states` and document metadata already hold the additional synchronization state. The first completed Notion sync reconciles exact duplicate rows created by older deployments.
+This release does not add a database migration. Automatic memory lifecycle data is stored in the existing `agent_memories.metadata` JSON field. `sync_states` and document metadata continue to hold synchronization state. The first completed Notion sync reconciles exact duplicate rows created by older deployments.
 
 ## 7. Mandatory verification
 
@@ -146,6 +152,22 @@ POST /api/sync/notion/writeback/{document_id}
 
 This endpoint requires the normal authenticated Atlas session.
 
+### Automatic memory check
+
+1. Save a note containing one clear first-person fact or goal and wait at least `MEMORY_EXTRACTION_DEBOUNCE_SECONDS`.
+2. Open **AI Assistant → brain icon**. The item should appear under trusted facts if it was explicit and high confidence, otherwise under emerging patterns.
+3. Ask a broad question such as “Based on my notes, what goals keep recurring?” and confirm the answer cites notes and labels inference honestly.
+4. Pin, correct, and forget a test memory once. Refresh the page and confirm the action persists.
+
+Useful authenticated endpoints:
+
+```text
+GET  /api/agent/memory/insights
+POST /api/agent/memory/build-profile
+```
+
+The profile endpoint is optional because the backend runs it automatically every `MEMORY_PROFILE_INTERVAL_MINUTES`. Note-level extraction is debounced and best-effort; a DeepSeek outage never rolls back a saved note.
+
 ## 8. Failure diagnosis
 
 | Symptom | Likely cause | Action |
@@ -157,6 +179,8 @@ This endpoint requires the normal authenticated Atlas session.
 | Duplicate body text from old deployments | Previous append-only updater | Edit and save the note once with this release; the complete body will replace top-level blocks |
 | Long note incomplete | Deployment still runs an old backend image | Rebuild backend and verify the running Git commit/image |
 | Repeated HTTP 429 | Notion rate limit | Increase `NOTION_WRITEBACK_DEBOUNCE_SECONDS`; let automatic retries run; avoid multiple backend replicas writing the same database |
+| Memory does not update | DeepSeek missing/unreachable, automation disabled, or debounce not elapsed | Check the three memory environment values and backend logs; verify `/api/agent/status` |
+| Memory keeps an outdated temporary goal | It was pinned or has not reached its decay window | Open Atlas memory and correct/forget it; pinned memories intentionally do not decay |
 
 Useful commands:
 
@@ -177,6 +201,8 @@ The second command intentionally prints only whether a token exists, never the t
 5. Preserve `metadata.notion_page_id`, `metadata.notion_content_hash`, and the `notion_writeback` sync state.
 6. Full-sync starts use a PostgreSQL advisory lock. Per-document debounce is process-local, so keep one backend application worker unless that queue is moved to Redis or another distributed worker.
 7. Before declaring deployment complete, perform the create-and-edit test in both Atlas and Notion.
+8. Treat `agent_memories` as inspectable derived memory, not as the canonical note store. Never learn from assistant-generated text; only notes and user chat turns are valid memory evidence.
+9. Keep one backend worker unless both Notion writeback debounce and memory extraction queues are moved to a distributed worker.
 
 ## 10. Rollback
 

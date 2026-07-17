@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-chat"
     deepseek_timeout_seconds: float = Field(default=45, ge=5, le=180)
+    memory_automation_enabled: bool = True
+    memory_extraction_debounce_seconds: float = Field(default=12, ge=1, le=300)
+    memory_profile_interval_minutes: int = Field(default=360, ge=15, le=10080)
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     secret_key: str = "change-me-in-env-with-at-least-32-random-characters"

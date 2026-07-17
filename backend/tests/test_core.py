@@ -435,9 +435,41 @@ def test_search_result_schema_is_valid():
 
 def test_agent_allows_up_to_one_hundred_retrieval_candidates():
     assert AskRequest(question="我是谁").top_k == 100
+    assert AskRequest(question="我是谁").mode == "auto"
     assert AskRequest(question="test", top_k=100).top_k == 100
     with pytest.raises(ValidationError):
         AskRequest(question="test", top_k=101)
+
+
+def test_agent_selects_response_strategy_automatically():
+    from routers.agent import select_response_strategy
+
+    assert select_response_strategy("What did I write about pricing?") == "knowledge"
+    assert select_response_strategy("根据我的笔记，我是谁？") == "reflection"
+    assert select_response_strategy("挑战我的假设，问我一个问题") == "socratic"
+
+
+def test_automatic_memory_only_trusts_direct_non_sensitive_statements():
+    from services.memory_service import should_auto_trust
+
+    explicit = {"evidence_kind": "explicit", "confidence": 0.9, "sensitive": False}
+    assert should_auto_trust(explicit)
+    assert not should_auto_trust({**explicit, "evidence_kind": "inferred"})
+    assert not should_auto_trust({**explicit, "confidence": 0.7})
+    assert not should_auto_trust({**explicit, "sensitive": True})
+
+
+def test_temporary_memory_decays_but_pinned_memory_does_not():
+    from datetime import datetime, timedelta, timezone
+    from services.memory_service import memory_is_stale
+
+    now = datetime.now(timezone.utc)
+    metadata = {
+        "temporal_scope": "temporary",
+        "last_seen": (now - timedelta(days=46)).isoformat(),
+    }
+    assert memory_is_stale(metadata, now=now)
+    assert not memory_is_stale({**metadata, "pinned": True}, now=now)
 
 
 def test_graph_keeps_one_sided_threshold_qualified_links():

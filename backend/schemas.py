@@ -98,7 +98,9 @@ class AskRequest(BaseModel):
     top_k: int = Field(default=100, ge=1, le=100)
     session_id: str | None = Field(default=None, max_length=128)
     document_id: int | None = None
-    mode: Literal["knowledge", "reflection", "socratic"] = "knowledge"
+    # "auto" is the public default. Legacy clients may still send one of the
+    # former modes; the backend keeps accepting them during migration.
+    mode: Literal["auto", "knowledge", "reflection", "socratic"] = "auto"
 
 
 class Citation(BaseModel):
@@ -192,12 +194,24 @@ class MemoryInsightResponse(BaseModel):
     insight_type: str
     confidence: float
     status: str
+    memory_state: Literal["fact", "trend", "hypothesis"] = "hypothesis"
+    source: str = "unknown"
+    trust_source: str = "auto_observed"
+    pinned: bool = False
+    requires_review: bool = False
+    conflict_with: str | None = None
+    occurrences: int = 1
+    stale: bool = False
     evidence_document_ids: list[int] = Field(default_factory=list)
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
     created_at: datetime | None = None
 
 
 class MemoryReviewRequest(BaseModel):
-    status: Literal["confirmed", "rejected"]
+    status: Literal["confirmed", "rejected"] | None = None
+    action: Literal["confirm", "reject", "pin", "forget", "correct"] | None = None
+    statement: str | None = Field(default=None, min_length=2, max_length=2000)
 
 
 # ── Sync ────────────────────────────────────────────────────────────

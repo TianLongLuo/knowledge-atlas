@@ -2,14 +2,15 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { askAgent, getMemoryInsights, reviewMemoryInsight } from "@/lib/api";
+import { askAgent, getMemoryInsights, updateMemoryInsight } from "@/lib/api";
 import type { AgentResponse, AgentCitation, MemoryInsight } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Bot, User, Send, Loader2, Brain, Check, X, Sparkles, MessageCircleQuestion, Wifi, WifiOff, FileText, ChevronDown, Plus } from "lucide-react";
+import { Bot, User, Send, Loader2, Brain, X, Sparkles, MessageCircleQuestion, Wifi, WifiOff, FileText, ChevronDown, Plus, Pin, Trash2, Pencil, Save, Eye, ShieldCheck, Activity, AlertTriangle } from "lucide-react";
 import { MarkdownContent } from "@/components/markdown-content";
 import { useNoteReader } from "@/components/note-reader";
+import { toast } from "sonner";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -24,12 +25,6 @@ const EMPTY_STATE_PROMPTS = [
   { text: "What tensions or changes appear in my notes?", icon: MessageCircleQuestion },
 ];
 
-const MODE_OPTIONS = [
-  { value: "knowledge", label: "Knowledge", icon: Bot, description: "Find facts and synthesize answers from your notes." },
-  { value: "reflection", label: "Reflection", icon: Sparkles, description: "Mirror patterns and tensions, separating evidence from inference." },
-  { value: "socratic", label: "Socratic", icon: MessageCircleQuestion, description: "Challenge an assumption with focused questions instead of deciding for you." },
-] as const;
-
 export default function AgentPage() {
   const searchParams = useSearchParams();
   const { openDocument } = useNoteReader();
@@ -41,7 +36,9 @@ export default function AgentPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [insights, setInsights] = useState<MemoryInsight[]>([]);
   const [insightOpen, setInsightOpen] = useState(false);
-  const [mode, setMode] = useState<"knowledge" | "reflection" | "socratic">("knowledge");
+  const [editingInsightId, setEditingInsightId] = useState<string | null>(null);
+  const [editingStatement, setEditingStatement] = useState("");
+  const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState(false);
   const [chatHydrated, setChatHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -108,7 +105,6 @@ export default function AgentPage() {
         question,
         session_id: sessionId || undefined,
         document_id: docId || undefined,
-        mode,
       });
 
       if (!sessionId) {
@@ -134,11 +130,24 @@ export default function AgentPage() {
     } finally {
       setLoading(false);
     }
-  }, [input, loading, sessionId, docId, mode]);
+  }, [input, loading, sessionId, docId]);
 
-  const reviewInsight = async (id: string, review: "confirmed" | "rejected") => {
-    const updated = await reviewMemoryInsight(id, review);
-    setInsights((current) => current.map((item) => item.id === id ? updated : item));
+  const applyMemoryAction = async (
+    id: string,
+    action: "confirm" | "reject" | "pin" | "forget" | "correct",
+    statement?: string,
+  ) => {
+    setMemoryBusy(id);
+    try {
+      const updated = await updateMemoryInsight(id, action, statement);
+      setInsights((current) => current.map((item) => item.id === id ? updated : item));
+      setEditingInsightId(null);
+      setEditingStatement("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update this memory");
+    } finally {
+      setMemoryBusy(null);
+    }
   };
 
   // Listen for auto-send events (from doc-scoped navigation)
@@ -158,7 +167,10 @@ export default function AgentPage() {
     }
   };
 
-  const pendingCount = insights.filter((item) => item.status === "pending").length;
+  const attentionCount = insights.filter((item) => item.status === "pending" && item.requires_review).length;
+  const trustedInsights = insights.filter((item) => item.status === "confirmed");
+  const emergingInsights = insights.filter((item) => item.status === "pending" && !item.requires_review);
+  const attentionInsights = insights.filter((item) => item.status === "pending" && item.requires_review);
 
   const startNewConversation = () => {
     setMessages([]);
@@ -190,9 +202,9 @@ export default function AgentPage() {
           )}
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" title="About you — review AI memory insights" onClick={() => setInsightOpen(true)} className="relative h-8 w-8">
+          <Button variant="ghost" size="icon" title="Atlas memory" onClick={() => setInsightOpen(true)} className="relative h-8 w-8">
             <Brain className="h-4 w-4" />
-            {pendingCount > 0 && <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-blue-500" />}
+            {attentionCount > 0 && <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-amber-500" />}
           </Button>
           <Button variant="ghost" size="icon" title="New conversation" onClick={startNewConversation} className="h-8 w-8">
             <Plus className="h-4 w-4" />
@@ -301,32 +313,10 @@ export default function AgentPage() {
 
         {/* Composer remains anchored while only the conversation scrolls. */}
         <div className="z-10 mt-3 shrink-0 border-t bg-background/95 pb-1 pt-3 backdrop-blur">
-          {/* Mode selector — compact pills */}
-          <div className="flex items-center gap-1.5 mb-2">
-            {MODE_OPTIONS.map(({ value, label, icon: Icon, description }) => (
-              <button
-                key={value}
-                onClick={() => setMode(value)}
-                title={description}
-                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
-                  mode === value
-                    ? "border-blue-400/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                    : "border-transparent text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                <Icon className="h-3 w-3" />
-                {label}
-              </button>
-            ))}
-          </div>
-          <p className="mb-2 text-[11px] leading-4 text-muted-foreground">
-            {MODE_OPTIONS.find((option) => option.value === mode)?.description}
-          </p>
-
           {/* Input row */}
           <div className="flex gap-2">
             <textarea
-              placeholder="Ask a question..."
+              placeholder="Ask Atlas about your notes or yourself..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -347,45 +337,141 @@ export default function AgentPage() {
 
       {/* Memory insight drawer */}
       <Dialog open={insightOpen} onOpenChange={setInsightOpen}>
-        <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-lg">
+        <DialogContent className="max-h-[88vh] overflow-hidden sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Brain className="h-4 w-4 text-blue-600" />
-              About you
-            </DialogTitle>
-          </DialogHeader>
-          <div className="cyber-scrollbar max-h-[60vh] space-y-3 overflow-y-auto pr-1">
-            <p className="text-xs text-muted-foreground">
-              Atlas can notice durable goals, values, beliefs, and recurring tensions in your notes and conversations. These remain suggestions until you confirm them.
-            </p>
-            {insights.filter((item) => item.status === "pending").length === 0 && (
-              <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-                No suggested memories to review yet. Any conversation or new note can produce an evidence-backed suggestion.
-              </p>
-            )}
-            {insights.filter((item) => item.status === "pending").map((insight) => (
-              <div key={insight.id} className="rounded-lg border border-border bg-background p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Badge variant="outline">{insight.insight_type}</Badge>
-                  <span className="text-[10px] text-muted-foreground">{Math.round(insight.confidence * 100)}% confidence</span>
-                </div>
-                <p className="mt-2 text-xs leading-5">{insight.statement}</p>
-                <p className="mt-2 text-[10px] text-muted-foreground">Evidence: {insight.evidence_document_ids.length} notes</p>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" className="h-7 flex-1 text-xs" onClick={() => void reviewInsight(insight.id, "confirmed")}>
-                    <Check className="mr-1 h-3 w-3" />Confirm
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-7 flex-1 text-xs" onClick={() => void reviewInsight(insight.id, "rejected")}>
-                    <X className="mr-1 h-3 w-3" />Reject
-                  </Button>
-                </div>
+            <div className="flex items-start justify-between gap-4 pr-7">
+              <div>
+                <DialogTitle className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-blue-600" />
+                  Atlas memory
+                </DialogTitle>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Learns quietly from saved notes and your own messages. Facts are trusted only when directly stated; inferred patterns stay tentative.
+                </p>
               </div>
-            ))}
-            <div className="border-t pt-3">
-              <p className="text-xs font-medium">Trusted memories</p>
-              <p className="mt-1 text-2xl font-semibold">{insights.filter((item) => item.status === "confirmed").length}</p>
-              <p className="text-[11px] text-muted-foreground">Only these are included as long-term personal context.</p>
+              <Badge variant="outline" className="shrink-0 border-emerald-500/25 bg-emerald-500/5 text-emerald-600">
+                <Activity className="mr-1 h-3 w-3" />Automatic
+              </Badge>
             </div>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-2 py-1">
+            <div className="rounded-xl border bg-emerald-500/[0.035] p-3">
+              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />Trusted facts</p>
+              <p className="mt-1 text-xl font-semibold">{trustedInsights.length}</p>
+            </div>
+            <div className="rounded-xl border bg-blue-500/[0.035] p-3">
+              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-blue-500" />Emerging patterns</p>
+              <p className="mt-1 text-xl font-semibold">{emergingInsights.length}</p>
+            </div>
+          </div>
+          <div className="cyber-scrollbar max-h-[58vh] space-y-5 overflow-y-auto pr-1">
+            {attentionInsights.length > 0 && (
+              <section>
+                <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5" />Needs your input
+                </h3>
+                <div className="space-y-2">
+                  {attentionInsights.map((insight) => (
+                    <div key={insight.id} className="rounded-xl border border-amber-500/25 bg-amber-500/[0.04] p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="outline">{insight.insight_type}</Badge>
+                        <span className="text-[10px] text-muted-foreground">Possible conflict or sensitive inference</span>
+                      </div>
+                      {editingInsightId === insight.id ? (
+                        <div className="mt-2 space-y-2">
+                          <textarea value={editingStatement} onChange={(event) => setEditingStatement(event.target.value)} rows={3} className="w-full resize-none rounded-lg border bg-background p-2 text-xs leading-5 outline-none focus:ring-2 focus:ring-blue-500/20" />
+                          <div className="flex justify-end gap-1"><Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditingInsightId(null)}><X className="h-3.5 w-3.5" /></Button><Button size="sm" className="h-7 px-2 text-xs" disabled={!editingStatement.trim() || memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "correct", editingStatement)}><Save className="mr-1 h-3 w-3" />Save</Button></div>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="mt-2 text-xs leading-5">{insight.statement}</p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button size="sm" className="h-7 text-xs" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "pin")}>
+                              <Pin className="mr-1 h-3 w-3" />Keep as true
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setEditingInsightId(insight.id); setEditingStatement(insight.statement); }}>
+                              <Pencil className="mr-1 h-3 w-3" />Correct
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "forget")}>
+                              <Trash2 className="mr-1 h-3 w-3" />Forget
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <section>
+              <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />What Atlas knows
+              </h3>
+              {trustedInsights.length === 0 ? (
+                <p className="rounded-xl border border-dashed p-3 text-xs text-muted-foreground">Trusted facts will appear as you write and talk with Atlas.</p>
+              ) : (
+                <div className="space-y-2">
+                  {trustedInsights.map((insight) => (
+                    <div key={insight.id} className="group rounded-xl border bg-background/70 p-3">
+                      {editingInsightId === insight.id ? (
+                        <div className="space-y-2">
+                          <textarea value={editingStatement} onChange={(event) => setEditingStatement(event.target.value)} rows={3} className="w-full resize-none rounded-lg border bg-background p-2 text-xs leading-5 outline-none focus:ring-2 focus:ring-blue-500/20" />
+                          <div className="flex justify-end gap-1">
+                            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditingInsightId(null)}><X className="h-3.5 w-3.5" /></Button>
+                            <Button size="sm" className="h-7 px-2 text-xs" disabled={!editingStatement.trim() || memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "correct", editingStatement)}><Save className="mr-1 h-3 w-3" />Save</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5"><Badge variant="outline">{insight.insight_type}</Badge>{insight.pinned && <Pin className="h-3 w-3 text-blue-500" />}{insight.stale && <Badge variant="secondary">stale</Badge>}</div>
+                            <span className="text-[10px] text-muted-foreground">{insight.evidence_document_ids.length} source{insight.evidence_document_ids.length === 1 ? "" : "s"}</span>
+                          </div>
+                          <p className="mt-2 text-xs leading-5">{insight.statement}</p>
+                          <div className="mt-2 flex items-center gap-1 opacity-70 transition-opacity group-hover:opacity-100">
+                            {insight.evidence_document_ids[0] && <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => openDocument(insight.evidence_document_ids[0])}><Eye className="mr-1 h-3 w-3" />Source</Button>}
+                            {!insight.pinned && <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "pin")}><Pin className="mr-1 h-3 w-3" />Pin</Button>}
+                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => { setEditingInsightId(insight.id); setEditingStatement(insight.statement); }}><Pencil className="mr-1 h-3 w-3" />Correct</Button>
+                            <Button size="sm" variant="ghost" className="ml-auto h-7 px-2 text-[11px] text-muted-foreground hover:text-red-500" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "forget")}><Trash2 className="h-3 w-3" /></Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {emergingInsights.length > 0 && (
+              <section>
+                <h3 className="mb-1 flex items-center gap-1.5 text-xs font-medium"><Sparkles className="h-3.5 w-3.5 text-blue-500" />Emerging patterns</h3>
+                <p className="mb-2 text-[11px] leading-4 text-muted-foreground">Used only as tentative context. Repetition strengthens them; inactivity lets them fade.</p>
+                <div className="space-y-2">
+                  {emergingInsights.map((insight) => (
+                    <div key={insight.id} className="group rounded-xl border border-blue-500/15 bg-blue-500/[0.025] p-3">
+                      {editingInsightId === insight.id ? (
+                        <div className="space-y-2">
+                          <textarea value={editingStatement} onChange={(event) => setEditingStatement(event.target.value)} rows={3} className="w-full resize-none rounded-lg border bg-background p-2 text-xs leading-5 outline-none focus:ring-2 focus:ring-blue-500/20" />
+                          <div className="flex justify-end gap-1"><Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditingInsightId(null)}><X className="h-3.5 w-3.5" /></Button><Button size="sm" className="h-7 px-2 text-xs" disabled={!editingStatement.trim() || memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "correct", editingStatement)}><Save className="mr-1 h-3 w-3" />Save</Button></div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between gap-2"><Badge variant="outline">{insight.insight_type}</Badge><span className="text-[10px] text-muted-foreground">seen {insight.occurrences}× · {Math.round(insight.confidence * 100)}%</span></div>
+                          <p className="mt-2 text-xs leading-5">{insight.statement}</p>
+                          <div className="mt-2 flex gap-1 opacity-70 transition-opacity group-hover:opacity-100">
+                            {insight.evidence_document_ids[0] && <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => openDocument(insight.evidence_document_ids[0])}><Eye className="mr-1 h-3 w-3" />Source</Button>}
+                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "pin")}><Pin className="mr-1 h-3 w-3" />Make fact</Button>
+                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => { setEditingInsightId(insight.id); setEditingStatement(insight.statement); }}><Pencil className="mr-1 h-3 w-3" />Correct</Button>
+                            <Button size="sm" variant="ghost" className="ml-auto h-7 px-2 text-muted-foreground hover:text-red-500" disabled={memoryBusy === insight.id} onClick={() => void applyMemoryAction(insight.id, "forget")}><Trash2 className="h-3 w-3" /></Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </DialogContent>
       </Dialog>

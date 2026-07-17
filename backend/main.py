@@ -58,6 +58,19 @@ async def _run_corpus_analysis() -> None:
         logger.exception("Corpus analysis failed (non-fatal)")
 
 
+async def _run_automatic_memory_maintenance() -> None:
+    """Periodically merge new cross-note patterns and refresh stale context."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await _run_corpus_analysis()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Automatic memory maintenance failed")
+        await asyncio.sleep(settings.memory_profile_interval_minutes * 60)
+
+
 async def _run_automatic_notion_sync() -> None:
     """Run Notion sync on a safe interval without requiring a UI click. Broadcasts SSE events."""
     from sqlalchemy import select, text
@@ -164,6 +177,14 @@ async def lifespan(app: FastAPI):
             settings.notion_auto_sync_interval_minutes,
         )
 
+    memory_task: asyncio.Task | None = None
+    if settings.memory_automation_enabled and settings.deepseek_api_key:
+        memory_task = asyncio.create_task(_run_automatic_memory_maintenance())
+        logger.info(
+            "Automatic memory enabled; full profile refresh every %d minutes",
+            settings.memory_profile_interval_minutes,
+        )
+
     yield
 
     if sync_task:
@@ -171,8 +192,15 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await sync_task
 
+    if memory_task:
+        memory_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await memory_task
+
     from services.note_service import note_service
+    from services.memory_service import memory_automation
     await note_service.cancel_pending_writebacks()
+    await memory_automation.cancel_pending_tasks()
     await engine.dispose()
     logger.info("Knowledge Atlas backend shut down")
 

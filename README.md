@@ -9,7 +9,7 @@ For production rollout, Notion permissions, end-to-end checks, troubleshooting, 
 - Documents are stored in PostgreSQL and split into chunks for search and citation.
 - Chroma stores embeddings for those chunks. Search and the AI assistant both retrieve from this existing vector database.
 - The AI assistant first retrieves relevant chunks, then sends only that context plus the user question to DeepSeek. Answers include citations back to local documents.
-- Assistant memory is inspectable: L0 stores raw conversation turns, L1 reports the real Chroma vector count, L2 stores the retrieved context used for each answer, and L3 stores evidence-backed insight candidates. Recent L0 turns and only user-confirmed L3 insights are included in later DeepSeek requests.
+- Assistant memory is inspectable: L0 stores raw conversation turns, L1 reports the real Chroma vector count, L2 stores the retrieved context used for each answer, and L3 stores automatically maintained facts, trends, and hypotheses. Only direct high-confidence user statements become trusted automatically; recurring inferences stay tentative and conflicts ask for user input.
 - The agent status endpoint checks three things separately: whether DeepSeek is configured, whether DeepSeek is reachable, and whether the vector store contains vectors.
 - The knowledge graph uses document-level Chroma ANN neighbors, Mutual-KNN noise filtering, a Canvas force engine, zoom/pan/node dragging, normalized source types, tag filters, global and depth-1/2/3 local graphs, and an in-page note reader.
 - Authentication uses `HttpOnly` cookies. Production rejects default secrets, default database passwords, and missing admin password hashes.
@@ -91,17 +91,17 @@ Every assistant turn follows the same grounded pipeline:
 1. Store the raw user turn as L0 conversation evidence.
 2. Retrieve relevant chunks from Chroma. If nothing relevant is found, do not ask the model to invent an answer.
 3. Store the exact retrieved context as L2 retrieval evidence.
-4. Send the retrieved notes, recent conversation, and user-confirmed long-term insights to DeepSeek.
+4. Send the retrieved notes, recent conversation, trusted facts, and clearly labeled tentative trends to DeepSeek.
 5. Return citations and store the assistant turn.
-6. Ask DeepSeek for at most one durable insight candidate. The candidate remains `pending` and is excluded from future prompts until the user confirms it.
+6. In a separate background task, learn only from the user's own words. Direct statements can become trusted facts; cross-note patterns remain tentative and decay when no longer observed.
 
-The UI offers three modes:
+The assistant has one input rather than three visible modes. The backend chooses the response balance automatically:
 
-- `Knowledge`: direct answers grounded in notes.
-- `Reflection`: separates explicit evidence from inference and asks a clarifying question.
-- `Socratic`: explores assumptions and trade-offs without making decisions for the user.
+- factual requests receive a direct, note-grounded answer;
+- identity and self-reflection requests separate evidence from inference;
+- decision or challenge requests may add one focused Socratic question after a useful answer.
 
-The review queue allows each proposed value, goal, belief, tension, or pattern to be confirmed or rejected. Rejected and pending hypotheses are never treated as established facts about the user.
+The `Atlas memory` panel shows trusted facts and emerging patterns. The user can pin, correct, inspect a source, or forget any item. Routine learning requires no review; only contradictory or sensitive memories raise an attention indicator. Model-generated answers are never used as memory evidence.
 
 ### Obsidian-style knowledge graph
 

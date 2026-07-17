@@ -124,6 +124,11 @@ class NoteService:
             invalidate_search_cache()
             invalidate_graph_cache()
 
+            # Analyze the final autosaved draft after a debounce. This is
+            # best-effort and never blocks or rolls back the canonical write.
+            from services.memory_service import memory_automation
+            memory_automation.schedule_note(document_id)
+
             if own_db:
                 await session.commit()
 
@@ -243,6 +248,9 @@ class NoteService:
             from routers.graph import invalidate_graph_cache
             invalidate_search_cache()
             invalidate_graph_cache()
+
+            from services.memory_service import memory_automation
+            memory_automation.schedule_note(doc.id)
 
             if own_db:
                 await session.commit()
