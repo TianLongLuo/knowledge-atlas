@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Auth ────────────────────────────────────────────────────────────
@@ -44,6 +44,24 @@ class DocumentResponse(BaseModel):
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_sa_model(cls, data: Any) -> Any:
+        if not isinstance(data, dict) and hasattr(data, "__table__"):
+            return {
+                "id": data.id,
+                "source_type": data.source_type,
+                "source_id": data.source_id,
+                "title": data.title,
+                "raw_content": data.raw_content,
+                "normalized_content": data.normalized_content,
+                "metadata": getattr(data, "metadata_", None),
+                "content_hash": data.content_hash,
+                "created_at": data.created_at,
+                "updated_at": data.updated_at,
+            }
+        return data
 
 
 class DocumentDetailResponse(DocumentResponse):
@@ -244,6 +262,21 @@ class KnowledgeNodeResponse(BaseModel):
     metadata_: dict[str, Any] | None = Field(None, alias="metadata")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_sa_model(cls, data: Any) -> Any:
+        if not isinstance(data, dict) and hasattr(data, "__table__"):
+            return {
+                "node_id": data.node_id,
+                "node_type": data.node_type,
+                "title": data.title,
+                "summary": data.summary,
+                "source_document_id": data.source_document_id,
+                "importance_score": data.importance_score,
+                "metadata": getattr(data, "metadata_", None),
+            }
+        return data
 
 
 class KnowledgeEdgeResponse(BaseModel):

@@ -136,11 +136,13 @@ class NotionSyncService:
         # Extract metadata from page properties. Atlas-generated tags remain
         # canonical when the Notion database has no explicit Tags property.
         has_notion_tags, notion_tags = self._extract_tag_property(properties)
+        domain = self._extract_domain(properties)
         incoming_metadata = {
             "url": url,
             "notion_page_id": page_id,
             "notion_last_edited": page.get("last_edited_time", ""),
             "created_time": page.get("created_time", ""),
+            "_explicit_domain": domain,
         }
 
         # Check for existing document
@@ -575,26 +577,50 @@ class NotionSyncService:
         """Extract tags from Notion properties."""
         return NotionSyncService._extract_tag_property(properties)[1]
 
+    # Notion property names (casefolded) that the user uses for tags / domains.
+    _TAG_PROPERTY_NAMES: set[str] = {
+        "tags", "tag", "标签", "標籤", "主题", "舊標籤", "旧标签",
+    }
+    _DOMAIN_PROPERTY_NAMES: set[str] = {
+        "领域", "領域", "一级分类", "一級分類",
+    }
+
     @staticmethod
     def _extract_tag_property(properties: dict) -> tuple[bool, list[str]]:
         """Return whether Notion explicitly defines a tag field and its values."""
         tags: list[str] = []
         for prop_name, prop_value in properties.items():
-            if prop_name.strip().casefold() not in {"tags", "tag", "标签", "標籤"}:
-                continue
-            if prop_value.get("type") == "multi_select":
-                for item in prop_value.get("multi_select", []):
-                    name = str(item.get("name", "")).strip()
-                    if name:
-                        tags.append(name)
-            elif prop_value.get("type") == "select":
-                select_val = prop_value.get("select")
-                if select_val:
-                    name = str(select_val.get("name", "")).strip()
-                    if name:
-                        tags.append(name)
-            return True, list(dict.fromkeys(tags))
+            key = prop_name.strip().casefold()
+            if key in NotionSyncService._TAG_PROPERTY_NAMES:
+                if prop_value.get("type") == "multi_select":
+                    for item in prop_value.get("multi_select", []):
+                        name = str(item.get("name", "")).strip()
+                        if name:
+                            tags.append(name)
+                elif prop_value.get("type") == "select":
+                    select_val = prop_value.get("select")
+                    if select_val:
+                        name = str(select_val.get("name", "")).strip()
+                        if name:
+                            tags.append(name)
+                return True, list(dict.fromkeys(tags))
         return False, []
+
+    @staticmethod
+    def _extract_domain(properties: dict) -> str:
+        """Extract the primary category / domain from Notion properties."""
+        for prop_name, prop_value in properties.items():
+            key = prop_name.strip().casefold()
+            if key in NotionSyncService._DOMAIN_PROPERTY_NAMES:
+                if prop_value.get("type") == "select":
+                    sel = prop_value.get("select")
+                    if sel:
+                        return str(sel.get("name", "")).strip()
+                elif prop_value.get("type") == "multi_select":
+                    items = prop_value.get("multi_select", [])
+                    if items:
+                        return str(items[0].get("name", "")).strip()
+        return ""
 
     @staticmethod
     def _merge_notion_metadata(
@@ -609,6 +635,12 @@ class NotionSyncService:
             merged["tags"] = notion_tags
         elif "tags" not in merged:
             merged["tags"] = []
+        # Surface the Notion "领域" / "一级分类" as the explicit category so the
+        # frontend category-filter and blue badge work without falling back to
+        # content-based heuristics.
+        domain = merged.get("_explicit_domain") or ""
+        if domain and "category" not in merged:
+            merged["category"] = domain
         return merged
 
     @staticmethod
