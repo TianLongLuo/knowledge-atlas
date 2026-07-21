@@ -740,13 +740,6 @@ async def ask_question(
         max_retries=2,
     )
 
-    mode_instructions = {
-        "knowledge": "Answer directly and accurately from the supplied notes. Use concise Markdown for readability. When helpful, summarize key points, draw connections between multiple notes, or suggest related topics the user might want to explore.",
-        "reflection": "Act as an evidence-based reflective mirror grounded in the notes. Separate explicit statements from inference, identify patterns or tensions supported by multiple notes, and ask at most one clarifying question when it would materially help.",
-        "socratic": "First give a brief evidence-based reflection, then ask at most one precise question that exposes an assumption or trade-off. Do not withhold a direct answer when the user asked for one.",
-    }
-    selected_strategy = body.mode if body.mode != "auto" else select_response_strategy(body.question, broad_identity)
-
     broad_identity_preamble = ""
     if broad_identity:
         broad_identity_preamble = (
@@ -769,7 +762,7 @@ async def ask_question(
         "- Find connections and patterns across different notes\n"
         "- Help organize, classify, and retrieve information\n"
         "- Assist with writing, research, and thinking\n\n"
-        "Rules:\n"
+        "How to respond:\n"
         "- Every substantive claim must cite specific notes as [Doc N]\n"
         "- Clearly distinguish what the user explicitly wrote from your inference\n"
         "- If evidence is insufficient, acknowledge the gap honestly — don't fabricate\n"
@@ -777,9 +770,9 @@ async def ask_question(
         "- Treat notes as the user's writing and collected knowledge — some are personal "
         "reflections, some are research collections, not all are biography\n"
         "- Be concise, specific, and genuinely helpful — no generic AI platitudes\n"
+        "- Adapt your style naturally: direct answers for factual questions, "
+        "reflective synthesis for personal questions, draw connections when patterns emerge\n"
         + broad_identity_preamble
-        + " Choose the most useful format for this request. "
-        + mode_instructions[selected_strategy]
     )
 
     try:
