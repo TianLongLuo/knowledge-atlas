@@ -674,9 +674,9 @@ async def ask_question(
     chunks_per_document: dict[int, int] = {}
     doc_index = 0
     context_chars = 0
-    max_context_chars = 60_000
+    max_context_chars = 80_000
     for r in search_results:
-        per_document_limit = 100 if body.document_id is not None else 1
+        per_document_limit = 100 if body.document_id is not None else 3
         if chunks_per_document.get(r.document_id, 0) >= per_document_limit:
             continue
         chunks_per_document[r.document_id] = chunks_per_document.get(r.document_id, 0) + 1
@@ -741,8 +741,8 @@ async def ask_question(
     )
 
     mode_instructions = {
-        "knowledge": "Answer directly and accurately from the supplied notes. Use concise Markdown headings and lists when they improve readability.",
-        "reflection": "Act as an evidence-based reflective mirror. Separate what the user explicitly wrote from your inference, identify changes or tensions only when supported, and ask at most one clarifying question when it would materially help.",
+        "knowledge": "Answer directly and accurately from the supplied notes. Use concise Markdown for readability. When helpful, summarize key points, draw connections between multiple notes, or suggest related topics the user might want to explore.",
+        "reflection": "Act as an evidence-based reflective mirror grounded in the notes. Separate explicit statements from inference, identify patterns or tensions supported by multiple notes, and ask at most one clarifying question when it would materially help.",
         "socratic": "First give a brief evidence-based reflection, then ask at most one precise question that exposes an assumption or trade-off. Do not withhold a direct answer when the user asked for one.",
     }
     selected_strategy = body.mode if body.mode != "auto" else select_response_strategy(body.question, broad_identity)
@@ -759,15 +759,26 @@ async def ask_question(
         )
 
     system_prompt = (
-        "You are the user's private Knowledge Atlas assistant — a personal AI grounded in their "
-        "entire vectorized note corpus. Every substantive claim about the user "
-        "must be grounded in the supplied notes or confirmed memories. Never invent biography, values, "
-        "intentions, personality, or mental-health conclusions. Distinguish evidence from inference. "
-        "If evidence is insufficient, say so clearly. Reply in the same language as the user. "
-        "Treat notes as the user's writing or collected knowledge, not automatically as biography; "
-        "state the difference between direct self-disclosure and inference. Cite source numbers such as [Doc 1]. "
+        "You are the user's AI assistant for their personal Notion knowledge base — "
+        "like Notion AI, but private and self-hosted. You have full access to their "
+        "curated notes spanning 8 domains (商业与电商/史政经/英语与语言/AI与技术/心理与成长"
+        "/工作与职业/健康/生活) with detailed topic tags.\n\n"
+        "Your capabilities:\n"
+        "- Answer questions by searching across the entire note corpus\n"
+        "- Summarize individual notes or groups of related notes\n"
+        "- Find connections and patterns across different notes\n"
+        "- Help organize, classify, and retrieve information\n"
+        "- Assist with writing, research, and thinking\n\n"
+        "Rules:\n"
+        "- Every substantive claim must cite specific notes as [Doc N]\n"
+        "- Clearly distinguish what the user explicitly wrote from your inference\n"
+        "- If evidence is insufficient, acknowledge the gap honestly — don't fabricate\n"
+        "- Reply in the same language as the user\n"
+        "- Treat notes as the user's writing and collected knowledge — some are personal "
+        "reflections, some are research collections, not all are biography\n"
+        "- Be concise, specific, and genuinely helpful — no generic AI platitudes\n"
         + broad_identity_preamble
-        + " Choose the most useful balance of direct answer, reflection, and questioning for this request. "
+        + " Choose the most useful format for this request. "
         + mode_instructions[selected_strategy]
     )
 
@@ -795,7 +806,7 @@ async def ask_question(
                 },
             ],
             temperature=0.3,
-            max_tokens=2200,
+            max_tokens=3000,
         )
         answer = response.choices[0].message.content or ""
         await save_memory(db, session_id, "L0", "assistant", answer)
