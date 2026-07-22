@@ -557,6 +557,39 @@ def test_graph_links_cross_language_speaking_practice_topics():
     assert "english-speaking" in scored[1]
 
 
+def test_graph_survives_partial_embedding_migrations():
+    from routers.graph import _average_compatible_vectors, _coerce_embedding
+
+    assert _coerce_embedding(None) is None
+    assert _coerce_embedding(["bad", 1]) is None
+    assert _coerce_embedding([0.1, float("nan")]) is None
+    assert _coerce_embedding((1, 2, 3)) == [1.0, 2.0, 3.0]
+    assert _average_compatible_vectors([
+        [1.0, 3.0],
+        [3.0, 5.0],
+        [9.0, 8.0, 7.0],
+    ]) == [2.0, 4.0]
+
+
+def test_graph_uses_text_fallback_while_vectors_rebuild():
+    from routers.graph import GraphNode, _build_composite_proposals, _lexical_vector
+
+    first = GraphNode(
+        id="a", label="英语口语练习计划", snippet="每天跟读英语对话并复述", group="学习", document_id=1,
+    )
+    second = GraphNode(
+        id="b", label="英语口语练习复盘", snippet="每天跟读英语对话并记录错误", group="学习", document_id=2,
+    )
+    nodes = {first.id: first, second.id: second}
+    fallback = {node_id: _lexical_vector(node) for node_id, node in nodes.items()}
+
+    proposals = _build_composite_proposals(
+        nodes, {}, min_similarity=0.30, neighbors=4, fallback_vectors_by_id=fallback,
+    )
+
+    assert ("a", "b") in proposals
+
+
 def test_legacy_document_route_key_survives_content_edits():
     assert legacy_document_key(
         "legacy-row", {"atlas_legacy_key": "content:original"}, "completely rewritten text"

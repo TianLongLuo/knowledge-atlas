@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -9,11 +10,15 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
 from config import settings
-from database import get_chroma_collection
+from database import get_chroma_collection, get_db
+from models import Document
 from utils import (
+    canonical_document_key,
     pseudo_id as _pseudo_id,
     normalized_source_type,
     normalized_tags,
@@ -106,6 +111,64 @@ def _normalized_vector(vector: list[float]) -> list[float]:
     return [value / norm for value in vector] if norm else vector
 
 
+def _coerce_embedding(value: object) -> list[float] | None:
+    """Accept Chroma list/NumPy output and reject malformed legacy rows."""
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if not vector or not all(math.isfinite(item) for item in vector):
+        return None
+    return vector
+
+
+def _average_compatible_vectors(vectors: list[list[float]]) -> list[float] | None:
+    """Average only the dominant embedding dimension after a model migration."""
+    if not vectors:
+        return None
+    dimension_counts: dict[int, int] = {}
+    for vector in vectors:
+        dimension_counts[len(vector)] = dimension_counts.get(len(vector), 0) + 1
+    dimension = max(dimension_counts, key=dimension_counts.get)
+    compatible = [vector for vector in vectors if len(vector) == dimension]
+    if not compatible or dimension == 0:
+        return None
+    return [
+        sum(vector[index] for vector in compatible) / len(compatible)
+        for index in range(dimension)
+    ]
+
+
+def _lexical_vector(node: GraphNode, dimensions: int = 384) -> list[float]:
+    """Create a stable local fallback for notes missing usable embeddings.
+
+    Character n-grams keep this useful for Chinese text while word tokens cover
+    English.  It is deliberately lightweight so a graph can still be rendered
+    while a rebuilt vector collection is only partially populated.
+    """
+    combined = " ".join((node.label, node.snippet, node.group, *node.tags)).casefold()
+    compact = re.sub(r"\s+", "", combined)
+    features = re.findall(r"[a-z0-9][a-z0-9-]{1,}", combined)
+    features.extend(
+        compact[index:index + size]
+        for size in (2, 3)
+        for index in range(max(0, len(compact) - size + 1))
+    )
+    vector = [0.0] * dimensions
+    for feature in features:
+        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+        bucket = int.from_bytes(digest[:4], "big") % dimensions
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[bucket] += sign
+    return vector
+
+
 _TOPIC_FAMILIES = {
     "english-speaking": (
         "英语口语", "口语练习", "英语练习", "英语对话", "口语表达", "跟读",
@@ -187,14 +250,26 @@ def _build_composite_proposals(
     vectors_by_id: dict[str, list[float]],
     min_similarity: float,
     neighbors: int,
+    fallback_vectors_by_id: dict[str, list[float]] | None = None,
 ) -> dict[tuple[str, str], dict[str, object]]:
     normalized = {node_id: _normalized_vector(vector) for node_id, vector in vectors_by_id.items()}
-    candidates: dict[str, list[tuple[float, str, str]]] = {node_id: [] for node_id in normalized}
-    node_ids = list(normalized)
+    fallback_normalized = {
+        node_id: _normalized_vector(vector)
+        for node_id, vector in (fallback_vectors_by_id or {}).items()
+    }
+    candidates: dict[str, list[tuple[float, str, str]]] = {node_id: [] for node_id in nodes_by_id}
+    node_ids = list(nodes_by_id)
     for source_index, source_id in enumerate(node_ids):
         for target_id in node_ids[source_index + 1:]:
+            source_vector = normalized.get(source_id)
+            target_vector = normalized.get(target_id)
+            if source_vector and target_vector and len(source_vector) == len(target_vector):
+                comparison_source, comparison_target = source_vector, target_vector
+            else:
+                comparison_source = fallback_normalized.get(source_id, [])
+                comparison_target = fallback_normalized.get(target_id, [])
             semantic = max(0.0, min(1.0, sum(
-                left * right for left, right in zip(normalized[source_id], normalized[target_id])
+                left * right for left, right in zip(comparison_source, comparison_target)
             )))
             scored = _composite_link_score(
                 semantic, nodes_by_id[source_id], nodes_by_id[target_id], min_similarity
@@ -226,6 +301,7 @@ async def get_full_graph(
     neighbors: int = Query(default=settings.graph_neighbors_per_node, ge=2, le=50),
     max_edges: int = Query(default=settings.graph_max_edges, ge=10, le=5000),
     _user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return a document graph blending semantic meaning, categories and tags."""
     cache_key = (limit, round(min_similarity, 3), neighbors, max_edges)
@@ -233,46 +309,108 @@ async def get_full_graph(
     if cached and time.monotonic() - cached[0] < 30:
         return cached[1]
     try:
-        collection = get_chroma_collection()
-        # A document may have many chunks. Read a bounded oversample and then
-        # aggregate chunks into document-level nodes before querying ANN.
-        result = collection.get(
-            limit=min(limit * 8, 4000),
-            include=["documents", "metadatas", "embeddings"],
-        )
-        ids = list(result.get("ids") or [])
-        if not ids:
-            return _empty_response()
-
-        documents = list(result.get("documents") or [""] * len(ids))
-        metadatas = list(result.get("metadatas") or [{}] * len(ids))
-        raw_embeddings = result.get("embeddings")
-        embeddings = []
-        if raw_embeddings is not None:
-            embeddings = [embedding.tolist() if hasattr(embedding, "tolist") else list(embedding) for embedding in raw_embeddings]
-
+        # PostgreSQL is the canonical document store. Start there so a Chroma
+        # metadata migration or partial vector rebuild can never hide the graph.
         aggregates: dict[str, dict] = {}
-        for index, chroma_id in enumerate(ids):
-            metadata = metadatas[index] or {}
-            text = documents[index] or ""
-            node_id, document_id = _node_identity(chroma_id, metadata, text)
-            aggregate = aggregates.setdefault(node_id, {
-                "document_id": document_id,
-                "title": str(metadata.get("title") or ""),
-                "source": str(metadata.get("source") or "chromadb"),
-                "metadata": metadata,
-                "texts": [],
-                "vectors": [],
-            })
-            if len(aggregate["texts"]) < 4:
-                aggregate["texts"].append(text)
-            if len(embeddings) == len(ids) and embeddings[index]:
-                aggregate["vectors"].append(embeddings[index])
+        sql_error: Exception | None = None
+        try:
+            sql_documents = (
+                await db.execute(
+                    select(Document).order_by(Document.updated_at.desc(), Document.id.desc()).limit(limit * 3)
+                )
+            ).scalars().all()
+            seen_documents: set[tuple[str, str]] = set()
+            for document in sql_documents:
+                text = str(document.normalized_content or document.raw_content or "")
+                content_key = canonical_document_key(str(document.title or ""), text)
+                if content_key is None:
+                    continue
+                identity = ("content", content_key)
+                if identity in seen_documents:
+                    continue
+                seen_documents.add(identity)
+                metadata = dict(document.metadata_ or {}) if isinstance(document.metadata_, dict) else {}
+                metadata.setdefault("source_type", str(document.source_type or "unknown"))
+                aggregates[f"document:{document.id}"] = {
+                    "document_id": int(document.id),
+                    "title": str(document.title or ""),
+                    "source": str(document.source_type or "unknown"),
+                    "metadata": metadata,
+                    "texts": [text] if text else [],
+                    "vectors": [],
+                }
+                if len(aggregates) >= limit:
+                    break
+        except Exception as exc:
+            sql_error = exc
+            logger.warning("Canonical documents unavailable while building graph: %s", exc)
+
+        # Merge any usable Chroma chunks and embeddings. All columns are read
+        # defensively because old and rebuilt collections can temporarily have
+        # different metadata shapes or incomplete rows.
+        chroma_error: Exception | None = None
+        try:
+            collection = get_chroma_collection()
+            result = collection.get(
+                limit=min(limit * 8, 4000),
+                include=["documents", "metadatas", "embeddings"],
+            )
+            raw_ids = result.get("ids")
+            if hasattr(raw_ids, "tolist"):
+                raw_ids = raw_ids.tolist()
+            ids = list(raw_ids) if isinstance(raw_ids, (list, tuple)) else []
+            raw_documents = result.get("documents")
+            raw_metadatas = result.get("metadatas")
+            raw_embeddings = result.get("embeddings")
+            if hasattr(raw_documents, "tolist"):
+                raw_documents = raw_documents.tolist()
+            if hasattr(raw_metadatas, "tolist"):
+                raw_metadatas = raw_metadatas.tolist()
+            if hasattr(raw_embeddings, "tolist"):
+                raw_embeddings = raw_embeddings.tolist()
+            documents = list(raw_documents) if isinstance(raw_documents, (list, tuple)) else []
+            metadatas = list(raw_metadatas) if isinstance(raw_metadatas, (list, tuple)) else []
+            embeddings = list(raw_embeddings) if isinstance(raw_embeddings, (list, tuple)) else []
+
+            for index, raw_chroma_id in enumerate(ids):
+                chroma_id = str(raw_chroma_id)
+                raw_metadata = metadatas[index] if index < len(metadatas) else {}
+                metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+                raw_text = documents[index] if index < len(documents) else ""
+                text = str(raw_text or "")
+                node_id, document_id = _node_identity(chroma_id, metadata, text)
+                aggregate = aggregates.setdefault(node_id, {
+                    "document_id": document_id,
+                    "title": str(metadata.get("title") or ""),
+                    "source": str(metadata.get("source") or "chromadb"),
+                    "metadata": metadata,
+                    "texts": [],
+                    "vectors": [],
+                })
+                if len(aggregate["texts"]) < 4 and text and text not in aggregate["texts"]:
+                    aggregate["texts"].append(text)
+                vector = _coerce_embedding(embeddings[index] if index < len(embeddings) else None)
+                if vector is not None:
+                    aggregate["vectors"].append(vector)
+                # Prefer canonical metadata, but fill any fields missing from a
+                # partially migrated SQL record using the vector row.
+                for key, value in metadata.items():
+                    if value not in (None, "", [], {}) and not aggregate["metadata"].get(key):
+                        aggregate["metadata"][key] = value
+        except Exception as exc:
+            chroma_error = exc
+            logger.warning("Vector collection unavailable while building graph: %s", exc)
+
+        if not aggregates:
+            if sql_error and chroma_error:
+                raise RuntimeError("Both canonical and vector knowledge stores are unavailable") from chroma_error
+            return _empty_response()
 
         selected_aggregates = list(aggregates.items())[:limit]
         nodes_by_id: dict[str, GraphNode] = {}
         query_embeddings: list[list[float]] = []
         query_node_ids: list[str] = []
+        fallback_vectors_by_id: dict[str, list[float]] = {}
         group_counts: dict[str, int] = {}
         type_counts: dict[str, int] = {}
         tag_counts: dict[str, int] = {}
@@ -298,17 +436,19 @@ async def get_full_graph(
                 tags=tags,
             )
             vectors = aggregate["vectors"]
-            if vectors:
-                dimensions = len(vectors[0])
-                query_embeddings.append([
-                    sum(vector[dimension] for vector in vectors) / len(vectors)
-                    for dimension in range(dimensions)
-                ])
+            averaged_vector = _average_compatible_vectors(vectors)
+            if averaged_vector is not None:
+                query_embeddings.append(averaged_vector)
                 query_node_ids.append(node_id)
+            fallback_vectors_by_id[node_id] = _lexical_vector(nodes_by_id[node_id])
 
         vectors_by_id = dict(zip(query_node_ids, query_embeddings))
         proposals = _build_composite_proposals(
-            nodes_by_id, vectors_by_id, min_similarity, neighbors
+            nodes_by_id,
+            vectors_by_id,
+            min_similarity,
+            neighbors,
+            fallback_vectors_by_id=fallback_vectors_by_id,
         )
 
         # Keep every threshold-qualified Top-K proposal. Requiring mutual KNN
